@@ -47,7 +47,10 @@ syscall_handler (struct intr_frame *f)
   void* usp = f->esp;                                          
   struct file* f_temp;                                         
   unsigned int i;                                                       
-  struct thread *cur = thread_current ();                      
+  struct thread *t, *cur = thread_current ();                      
+  uint32_t *signum;
+  void (**handler) ();
+  int32_t *child_tid;
                                                                
   if(bad_ptr(usp,f)) return;                                   
                                                                
@@ -286,6 +289,23 @@ syscall_handler (struct intr_frame *f)
       }                                                          
     }                                                            
     lock_release(&filesys_lock);
+    break;
+  case SYS_SENDSIG:
+    if(bad_ptr(usp + 16, f)) break;                              
+    if(bad_ptr(usp + 20, f)) break;
+    child_tid = *(tid_t *)(usp + 16);                       
+    signum = usp + 20;
+    struct thread *t = thread_wait(child_tid);
+    if (is_user_vaddr(t->handler[*signum]))
+      printf("Signum: %d, Action: %p\n",*signum,t->handler[*signum]);
+    break;
+  case SYS_SIGACTION:
+    if(bad_ptr(usp + 16, f)) break;                              
+    if(bad_ptr(usp + 20, f)) break;
+    signum = usp + 16;    
+    handler = usp + 20;
+    thread_current()->handler[*signum] = *handler; 
+    // printf("Signum : %d, Action : %p\n", *signum, t->handler[*signum]);
     break;
   }
 }

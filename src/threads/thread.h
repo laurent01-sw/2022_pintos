@@ -109,6 +109,7 @@ struct thread
     struct semaphore exit_sema;
     struct semaphore load_sema;
     int load_status;
+    void (*handler[3]) (); /* Signal Handler */
 #endif
 
     /* Owned by thread.c. */
