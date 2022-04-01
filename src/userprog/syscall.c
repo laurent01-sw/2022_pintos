@@ -307,6 +307,9 @@ syscall_handler (struct intr_frame *f)
     thread_current()->handler[*signum] = *handler; 
     // printf("Signum : %d, Action : %p\n", *signum, t->handler[*signum]);
     break;
+  case SYS_YIELD:
+    thread_yield();
+    break;
   }
 }
 
