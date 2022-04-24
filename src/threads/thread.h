@@ -6,6 +6,9 @@
 #include <stdint.h>
 #include "threads/synch.h"
 
+// Project 3. VM
+#include "lib/kernel/hash.h" 
+
 /* States in a thread's life cycle. */
 enum thread_status
   {
@@ -111,6 +114,9 @@ struct thread
     int load_status;
     void (*handler[3]) (); /* Signal Handler */
 #endif
+
+    // Project 3. VM
+    struct hash vm; // page table (supplement)
 
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */

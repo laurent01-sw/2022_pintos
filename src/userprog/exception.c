@@ -6,6 +6,12 @@
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 
+// Project 3. VM
+#include "threads/palloc.h"
+#include "threads/vaddr.h"
+#include "userprog/process.h"
+#include "vm/page.h"
+
 /* Number of page faults processed. */
 static long long page_fault_cnt;
 
@@ -109,6 +115,16 @@ kill (struct intr_frame *f)
     }
 }
 
+
+
+// Declare
+void
+handle_mm_fault (
+        struct intr_frame *f,
+        void *fault_addr,
+        uint32_t code
+    );
+
 /* Page fault handler.  This is a skeleton that must be filled in
    to implement virtual memory.  Some solutions to project 2 may
    also require modifying this code.
@@ -123,9 +139,9 @@ kill (struct intr_frame *f)
 static void
 page_fault (struct intr_frame *f) 
 {
-  bool not_present;  /* True: not-present page, false: writing r/o page. */
-  bool write;        /* True: access was write, false: access was read. */
-  bool user;         /* True: access by user, false: access by kernel. */
+  uint32_t not_present;  /* True: not-present page, false: writing r/o page. */
+  uint32_t write;        /* True: access was write, false: access was read. */
+  uint32_t user;         /* True: access by user, false: access by kernel. */
   void *fault_addr;  /* Fault address. */
 
   /* Obtain faulting address, the virtual address that was
@@ -148,6 +164,14 @@ page_fault (struct intr_frame *f)
   not_present = (f->error_code & PF_P) == 0;
   write = (f->error_code & PF_W) != 0;
   user = (f->error_code & PF_U) != 0;
+  
+  // Project 3: VM
+  uint32_t code = ((user << 2) | (write << 1) | (not_present));
+
+//   printf ("Original fault: %p\n", fault_addr);
+  handle_mm_fault (f, fault_addr, code);
+
+  return;
 
   /* To implement virtual memory, delete the rest of the function
      body, and replace it with code that brings in the page to
@@ -157,7 +181,111 @@ page_fault (struct intr_frame *f)
           not_present ? "not present" : "rights violation",
           write ? "writing" : "reading",
           user ? "user" : "kernel");
+          printf("eip: %p\n", f->eip);
+
   __exit(-1);
   kill (f);
 }
 
+// extern struct lock filesys_lock;
+extern struct lock elf_load_lock;
+
+// #define MAX_STACK_SIZE     (1 << 23)
+
+// bool
+// is_accessing_stack (void *ptr, uint32_t *esp)
+// {
+//   return  ((PHYS_BASE - pg_round_down (ptr)) <= MAX_STACK_SIZE 
+//             && (uint32_t*)ptr >= (esp - 32));
+// }
+
+/* Project 3: VM, Added.
+ * New page fault handler added.
+ */
+
+// Complement functions:
+bool handle_addr_range (void *fault_addr);
+void handle_elf_load (void *fault_addr);
+
+void
+handle_mm_fault (
+        struct intr_frame *f,
+        void *fault_addr,
+        uint32_t code
+    )
+{
+   fault_addr = pg_round_down (fault_addr);
+
+   // Address range check
+   // ASSERT (fault_addr >= ((void *) 0x08048000));
+   if (!handle_addr_range (fault_addr))
+   {
+      __exit(-1);
+      kill (f);
+   }
+
+   // Fault handling
+   switch (code)
+   {
+   case 1: // not present
+   case 3:
+   case 5:
+   case 7:
+      handle_elf_load (fault_addr);
+      return;
+
+   case 2: // write
+      
+   case 4: // user
+      ASSERT (false);
+
+   default: // Unknown case: killing the process.
+      __exit(-1);
+      kill (f);
+   }
+}
+
+// Checks address range
+bool handle_addr_range (void *fault_addr)
+{
+   
+   return 
+      fault_addr < ((void *) 0x08048000) ? false
+         : true;
+}
+
+
+// Demand paging for ELF load
+void handle_elf_load (void *fault_addr)
+{
+   struct thread *t = thread_current ();
+   struct vm_entry *vme;
+   uint8_t *kpage;
+
+   // printf ("  > handle_elf_load\n");
+   // printf ("    fault_addr: %p\n", fault_addr);
+   
+   vme = find_vme (&(t->vm), fault_addr);
+   kpage = palloc_get_page (PAL_USER);
+   
+   ASSERT (vme != NULL);
+   ASSERT (kpage != NULL);
+
+   // Lookup the disk
+   file_seek (vme->ti.exe_file, vme->ti.ofs);
+
+   if (file_read (vme->ti.exe_file, kpage, vme->ti.rbytes) != (int) vme->ti.rbytes)
+   {
+      palloc_free_page (kpage);
+      ASSERT (false);
+   }
+
+   memset (kpage + vme->ti.rbytes, 0, vme->ti.zbytes);
+   vme->paddr = kpage;
+
+   if (!install_page (vme->vaddr, kpage, vme->writable)) 
+   {
+      palloc_free_page (kpage);
+      ASSERT (false);
+   }
+}

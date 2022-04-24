@@ -21,6 +21,10 @@
 #include "userprog/syscall.h"
 #include "threads/vaddr.h"
 
+// Project 3. VM
+#include "lib/kernel/hash.h"
+#include "vm/page.h"
+
 extern struct lock filesys_lock;
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
@@ -148,6 +152,12 @@ process_exit (void)
     }
     sema_up(&cur->parent_sema);
     sema_down(&cur->exit_sema);
+
+    // Project 3. VM
+    // hash_destroy (&(cur->vm), NULL);
+
+    vm_destroy (&(cur->vm));
+    hash_destroy (&(cur->vm), NULL);
 }
 
 /* Sets up the CPU for running user code in the current
@@ -233,7 +243,9 @@ static bool setup_stack (const char* arg_pointer, void **esp);
 static bool validate_segment (const struct Elf32_Phdr *, struct file *);
 static bool load_segment (struct file *file, off_t ofs, uint8_t *upage,
                           uint32_t read_bytes, uint32_t zero_bytes,
-                          bool writable);
+                          bool writable
+                          , char *exe_name
+                          );
 
 /* Loads an ELF executable from FILE_NAME into the current thread.
    Stores the executable's entry point into *EIP
@@ -259,6 +271,15 @@ load (const char *file_name, void (**eip) (void), void **esp)
   if (t->pagedir == NULL) 
     goto done;
   process_activate ();
+
+
+  // Project 3. VM
+  // Initializing the hash table
+  if (!hash_init (&(t->vm), vm_hash, vm_less, NULL))
+  {
+    printf ("hash_init failed.\n");
+    goto done;
+  }
 
   /* Open executable file. */
   lock_acquire(&filesys_lock);
@@ -338,7 +359,9 @@ load (const char *file_name, void (**eip) (void), void **esp)
                   zero_bytes = ROUND_UP (page_offset + phdr.p_memsz, PGSIZE);
                 }
               if (!load_segment (file, file_page, (void *) mem_page,
-                                 read_bytes, zero_bytes, writable))
+                                 read_bytes, zero_bytes, writable
+                                 , exe_name
+                                 ))
                 goto done;
             }
           else
@@ -358,14 +381,14 @@ load (const char *file_name, void (**eip) (void), void **esp)
 
  done:
   /* We arrive here whether the load is successful or not. */
-  file_close (file);
+  // file_close (file);
   lock_release(&filesys_lock);
   return success;
 }
 
 /* load() helpers. */
 
-static bool install_page (void *upage, void *kpage, bool writable);
+// bool install_page (void *upage, void *kpage, bool writable);
 
 /* Checks whether PHDR describes a valid, loadable segment in
    FILE and returns true if so, false otherwise. */
@@ -428,12 +451,20 @@ validate_segment (const struct Elf32_Phdr *phdr, struct file *file)
    or disk read error occurs. */
 static bool
 load_segment (struct file *file, off_t ofs, uint8_t *upage,
-              uint32_t read_bytes, uint32_t zero_bytes, bool writable) 
+              uint32_t read_bytes, uint32_t zero_bytes, bool writable,
+              char *exe_name
+              ) 
 {
   ASSERT ((read_bytes + zero_bytes) % PGSIZE == 0);
   ASSERT (pg_ofs (upage) == 0);
   ASSERT (ofs % PGSIZE == 0);
 
+  // Added: Project 3.
+  struct text_info text_info_;
+  struct vm_entry *t_vme;
+
+  text_info_.ofs = ofs;
+  
   file_seek (file, ofs);
   while (read_bytes > 0 || zero_bytes > 0) 
     {
@@ -442,31 +473,75 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
          and zero the final PAGE_ZERO_BYTES bytes. */
       size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
       size_t page_zero_bytes = PGSIZE - page_read_bytes;
-
+        
+      // Deleted: Proejct 3.
       /* Get a page of memory. */
-      uint8_t *kpage = palloc_get_page (PAL_USER);
-      if (kpage == NULL)
-        return false;
+      // uint8_t *kpage = palloc_get_page (PAL_USER);
+      // if (kpage == NULL)
+      //   return false;
 
+      // Deleted: Project 3.
       /* Load this page. */
-      if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
-        {
-          palloc_free_page (kpage);
-          return false; 
-        }
-      memset (kpage + page_read_bytes, 0, page_zero_bytes);
+      // if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
+      //   {
+      //     palloc_free_page (kpage);
+      //     return false; 
+      //   }
 
+      // Deleted: Project 3.
+      // memset (kpage + page_read_bytes, 0, page_zero_bytes);
+        
+      // Deleted: Project 3.
       /* Add the page to the process's address space. */
-      if (!install_page (upage, kpage, writable)) 
-        {
-          palloc_free_page (kpage);
-          return false; 
-        }
+      // if (!install_page (upage, kpage, writable)) 
+      //   {
+      //     palloc_free_page (kpage);
+      //     return false; 
+      //   }
+
+      /* Create vm_entry (Use malloc) */
+      /* Setting vm_entry members, offset and size of file to read
+         when virtual page is required, zero  byte to pad at the end.
+         Add vm_entry to hash table by insert_vme() */
+
+      // 1. Create vm_entry
+      t_vme = malloc (sizeof (struct vm_entry));
+
+      // text_info_.exe_name = malloc(sizeof (strlen (exe_name)) + 1);
+      // strlcpy (text_info_.exe_name, exe_name, strlen (exe_name) + 1);
+      ASSERT (t_vme != NULL);
+
+      text_info_.owner    = thread_current ();
+      text_info_.exe_file = file;
+      text_info_.rbytes   = page_read_bytes;
+      text_info_.zbytes   = page_zero_bytes;
+
+
+      // printf ("Load seg: upage (%p), offset: %d\n", upage, ofs);
+
+      // 2. Initialize vm_entry members.
+      init_vm_entry (
+            t_vme,      // Target
+            upage,      // upage (arg of load_segment)     
+            writable,   // Permission
+            &text_info_,
+            FILE_BACKED | ELF
+          );
+
+      
+      // 3. Insert a vm_entry
+      if (!insert_vme ( &(thread_current ()->vm), t_vme))
+      {
+        free (t_vme);
+        ASSERT (false); // Raise panic
+      }
 
       /* Advance. */
       read_bytes -= page_read_bytes;
       zero_bytes -= page_zero_bytes;
       upage += PGSIZE;
+
+      text_info_.ofs += PGSIZE;
     }
   return true;
 }
@@ -533,8 +608,49 @@ setup_stack (const char* arg_pointer, void **esp)
           *(temp_p + arg_num - i) = PHYS_BASE - accum;                                           
           strlcpy(*(temp_p + arg_num - i), arg_save[arg_num - i - 1], arg_size[arg_num - i - 1]);
         }
-          *temp_p = (void*)(temp_p + 1);                                                           
-          *esp = (void*)(PHYS_BASE - (16 + arg_num * 4 + arg_size_t));                             
+          
+        *temp_p = (void*)(temp_p + 1);                                                           
+        *esp = (void*)(PHYS_BASE - (16 + arg_num * 4 + arg_size_t));
+
+        // Project 3.
+
+        /* Create vm_entry */
+        /* Set up vm_entry members */
+        /* Using insert_vme(), add vm_enty to hash table */
+        struct vm_entry *t_vme = malloc (sizeof (struct vm_entry));
+        struct text_info tinfo = {
+            .owner    = thread_current (),
+            .exe_file = 0,
+            .ofs      = 0,
+            .rbytes   = 0,
+            .zbytes   = 0
+        };  // Meaningless.
+
+        ASSERT (t_vme != NULL);
+
+        init_vm_entry (
+                t_vme,
+                ((uint8_t *) PHYS_BASE) - PGSIZE, // Set upage (vaddr). Recall we are dealing with stack!
+                true, // Writable permission
+                &tinfo,
+                ANONYMOUS
+            );
+        
+        if (!insert_vme ( &(thread_current ()->vm), t_vme))
+        {
+            free (t_vme);
+            ASSERT (false); // Raise panic.
+        }
+
+        // Debug
+        
+        // printf ("setup_stack: hash size: %d, %p\n", hash_size( &(thread_current ()->vm) ), &(thread_current ()->vm));
+
+        // printf ("is really? %p\n", 
+        //   find_vme(&(thread_current ()->vm), ((uint8_t *) PHYS_BASE) - PGSIZE)
+        //   );
+
+
       }
       else
         palloc_free_page (kpage);
@@ -551,7 +667,7 @@ setup_stack (const char* arg_pointer, void **esp)
    with palloc_get_page().
    Returns true on success, false if UPAGE is already mapped or
    if memory allocation fails. */
-static bool
+bool
 install_page (void *upage, void *kpage, bool writable)
 {
   struct thread *t = thread_current ();

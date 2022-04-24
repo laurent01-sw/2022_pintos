@@ -293,7 +293,7 @@ syscall_handler (struct intr_frame *f)
   case SYS_SENDSIG:
     if(bad_ptr(usp + 16, f)) break;                              
     if(bad_ptr(usp + 20, f)) break;
-    child_tid = *(tid_t *)(usp + 16);                       
+    child_tid = *(tid_t *)(usp + 16);            
     signum = usp + 20;
     struct thread *t = thread_wait(child_tid);
     if (is_user_vaddr(t->handler[*signum]))

@@ -15,6 +15,8 @@
 #include "userprog/process.h"
 #endif
 
+#include "vm/page.h"
+
 /* Random value for struct thread's `magic' member.
    Used to detect stack overflow.  See the big comment at the top
    of thread.h for details. */
@@ -36,6 +38,9 @@ static struct thread *initial_thread;
 
 /* Lock used by allocate_tid(). */
 static struct lock tid_lock;
+
+struct lock elf_load_lock;
+
 
 /* Stack frame for kernel_thread(). */
 struct kernel_thread_frame 
@@ -92,6 +97,8 @@ thread_init (void)
   lock_init (&tid_lock);
   list_init (&ready_list);
   list_init (&all_list);
+
+  lock_init (&elf_load_lock);
 
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();

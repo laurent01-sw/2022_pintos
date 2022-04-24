@@ -100,4 +100,8 @@ unsigned hash_bytes (const void *, size_t);
 unsigned hash_string (const char *);
 unsigned hash_int (int);
 
+// Project 3: VM. Moved from hash.c to hash.h
+#define list_elem_to_hash_elem(LIST_ELEM)                       \
+        list_entry(LIST_ELEM, struct hash_elem, list_elem)
+
 #endif /* lib/kernel/hash.h */
