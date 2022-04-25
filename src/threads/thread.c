@@ -15,7 +15,10 @@
 #include "userprog/process.h"
 #endif
 
+#include "devices/block.h"
+
 #include "vm/page.h"
+#include "vm/swap.h"
 
 /* Random value for struct thread's `magic' member.
    Used to detect stack overflow.  See the big comment at the top
@@ -45,6 +48,8 @@ extern struct lock lru_list_lock;
 
 extern struct bitmap *bm_swap;
 extern struct lock bm_swap_lock;
+
+extern struct block *swap_device;
 
 
 /* Stack frame for kernel_thread(). */
@@ -107,10 +112,8 @@ thread_init (void)
   list_init (&lru_list);
   lock_init (&lru_list_lock);
 
-  // bitmap_create (bm_swap);
-  // free_map = bitmap_create (block_size (fs_device));
+  swap_init ();
   lock_init (&bm_swap_lock);
-  // printf ("thread_init done\n");
 
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();

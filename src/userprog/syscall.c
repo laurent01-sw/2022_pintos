@@ -367,7 +367,10 @@ int32_t __exit(int status)
       if(t->ptid == cur->tid && !t->seen_status)
         process_wait(t->tid);
     }
-    lock_acquire(&filesys_lock);
+    
+    if (!lock_held_by_current_thread (&filesys_lock))
+      lock_acquire(&filesys_lock);
+    
     file_allow_write(cur->itself);
     lock_release(&filesys_lock);
     thread_exit();

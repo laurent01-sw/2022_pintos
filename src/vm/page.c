@@ -7,6 +7,8 @@
 #include "threads/palloc.h"
 #include "threads/thread.h"
 
+#include "devices/block.h"
+
 #include "vm/page.h"
 
 /* Returns a hash value for page p. */
@@ -28,14 +30,6 @@ vm_less (const struct hash_elem *a_, const struct hash_elem *b_,
     return a->vaddr < b->vaddr;
 }
 
-// void
-// vm_destructor (struct hash_elem *e, void *aux UNUSED)
-// {
-//     struct vm_entry *vme = hash_entry (e, struct vm_entry, elem);
-
-//     ASSERT (vme != NULL);
-//     free (vme);
-// }
 
 // Follows: hash_clear.
 void vm_destroy (struct hash *vm)
@@ -72,21 +66,25 @@ init_vm_entry (
         uint8_t *vaddr,             // Allocated User Page
         bool writable,              // Write permission?
         struct text_info *tinfo,    // ELF information
+        struct swap_info *sinfo,    // Swap information
         enum PAGE_TYPE page_type)
 {
     ASSERT (vme != NULL);
 
-    vme->vaddr      = vaddr;
-    vme->writable   = writable;
+    vme->vaddr       = vaddr;
+    vme->writable    = writable;
 
     // vme->ti.exe_name    = tinfo->exe_name;
-    vme->ti.owner       = tinfo->owner;
-    vme->ti.exe_file    = tinfo->exe_file;
-    vme->ti.ofs         = tinfo->ofs;
-    vme->ti.rbytes      = tinfo->rbytes;
-    vme->ti.zbytes      = tinfo->zbytes;
+    vme->ti.owner    = tinfo->owner;
+    vme->ti.exe_file = tinfo->exe_file;
+    vme->ti.ofs      = tinfo->ofs;
+    vme->ti.rbytes   = tinfo->rbytes;
+    vme->ti.zbytes   = tinfo->zbytes;
 
-    vme->page_type = page_type;
+    vme->si.loc      = sinfo->loc;
+    vme->si.idx      = sinfo->idx;
+
+    vme->page_type   = page_type;
 
     return;
 }
@@ -112,7 +110,6 @@ bool
 insert_vme (struct hash *vm, struct vm_entry *vme) 
 {
     struct hash_elem *success = hash_insert (vm, &(vme->elem)); 
-
     return success == NULL;
 }
 

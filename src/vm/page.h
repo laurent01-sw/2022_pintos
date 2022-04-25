@@ -1,9 +1,20 @@
-enum PAGE_TYPE { 
+enum PAGE_TYPE 
+{ 
     UNKNOWN     = 0x01, 
     ANONYMOUS   = 0x02, 
     FILE_BACKED = 0x04,
     ELF         = 0x08,
 };
+
+
+enum LOCATION
+{
+    // NOWHERE     = 0x10,
+    MEMORY      = 0x20,
+    DISK        = 0x40,
+    VALHALLA    = 0x80
+};
+
 
 // For ELF demand paging
 struct text_info
@@ -22,8 +33,17 @@ struct text_info
 };
 
 
+
+// for swap management.
+struct swap_info
+{
+    uint32_t loc;
+    block_sector_t idx;
+};
+
+
 //
-// 1. Supplement Page Table
+// Supplement Page Table
 // : Enables page fault handling by supplementing the page table.
 struct vm_entry
 {
@@ -36,6 +56,7 @@ struct vm_entry
     
     // For demand paging
     struct text_info ti;
+    struct swap_info si;
 
     uint32_t page_type;     // ANONYM? FILE_BACKED?
 };
@@ -48,6 +69,7 @@ void init_vm_entry (
         uint8_t *,
         bool,
         struct text_info *,
+        struct swap_info *,
         uint32_t PAGE_TYPE
         );
 
@@ -65,14 +87,3 @@ bool delete_vme (struct hash *vm, struct vm_entry *vme);
 
 
 void debug_vm_entry (struct vm_entry *vme);
-
-
-//
-// 2. Physical Page Representation
-struct page
-{
-    struct list_elem elem;  // List element
-    
-    struct vm_entry *vme;
-};
-

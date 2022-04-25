@@ -10,7 +10,9 @@
 #include "threads/palloc.h"
 #include "threads/vaddr.h"
 #include "userprog/process.h"
+#include "devices/block.h"
 #include "vm/page.h"
+#include "vm/swap.h"
 
 /* Number of page faults processed. */
 static long long page_fault_cnt;
@@ -217,7 +219,9 @@ void handle_elf_load (void *);
 void handle_stack_fault (struct intr_frame*, void *);
 
 
-// #define KILL_APP(X)
+#define KILL_APP(F) \
+   do { __exit (-1); kill (F); } while (0)
+
 
 void
 handle_mm_fault (
@@ -226,49 +230,37 @@ handle_mm_fault (
         uint32_t code
     )
 {
+
+   struct vm_entry *vme;
+   struct thread *cur = thread_current ();
+
    // Address range check
    if (!is_allowed_addr (f, fault_addr))
-   {
-      __exit(-1);
-      kill (f);
-   }
-
+      KILL_APP (f);
+      
    // Fault handling
    switch (code)
    {
-   case 1: /* not present */
-   case 3: /* not present & write */
-      /* Not in user space, not allowed. */
-      __exit (-1);
-         kill (f);
-      
+   case 5:  /* not present & user */
+      if (is_stack (f, fault_addr))
+         KILL_APP (f);
+      else
+         handle_elf_load (fault_addr); // data seg.
+
       return;
 
-   case 5: /* not present & user */
-      if (is_stack (f, fault_addr))
-      {
-         __exit (-1);
-         kill (f);
-
-         return;
-      }
-
-   case 7: /* not present & write & user */
+   case 7:  /* not present & write & user */
       if (is_stack (f, fault_addr) 
             && is_expand_stack (f, fault_addr))
          handle_stack_fault (f, fault_addr);
 
-      else handle_elf_load (fault_addr); // data seg.
+      else
+         handle_elf_load (fault_addr); // data seg.
 
       return;
 
-   case 2: /* write */
-   case 4: /* user */
-      ASSERT (false);
-
    default: /* Unknown case: killing the process. */
-      __exit(-1);
-      kill (f);
+      KILL_APP (f);
    }
 }
 
@@ -359,6 +351,11 @@ handle_stack_fault (struct intr_frame *f, void *fault_addr)
       .zbytes   = 0
    };  // Meaningless.
 
+   struct swap_info sinfo = {
+      .idx      = 0,
+      .loc      = MEMORY
+   };
+
    ASSERT (vme != NULL);
 
    init_vm_entry (
@@ -366,6 +363,7 @@ handle_stack_fault (struct intr_frame *f, void *fault_addr)
             pg_round_down (fault_addr), // Set upage (vaddr). Recall we are dealing with stack!
             true, // Writable permission
             &tinfo,
+            &sinfo,
             ANONYMOUS
       );
 

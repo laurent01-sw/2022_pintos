@@ -23,6 +23,7 @@
 
 // Project 3. VM
 #include "lib/kernel/hash.h"
+#include "devices/block.h"
 #include "vm/page.h"
 
 // Added.
@@ -468,6 +469,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
 
   // Added: Project 3.
   struct text_info text_info_;
+  struct swap_info swap_info_;
   struct vm_entry *t_vme;
 
   text_info_.ofs = ofs;
@@ -518,13 +520,13 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       // strlcpy (text_info_.exe_name, exe_name, strlen (exe_name) + 1);
       ASSERT (t_vme != NULL);
 
-      text_info_.owner    = thread_current ();
-      text_info_.exe_file = file;
-      text_info_.rbytes   = page_read_bytes;
-      text_info_.zbytes   = page_zero_bytes;
+      text_info_.owner        = thread_current ();
+      text_info_.exe_file     = file;
+      text_info_.rbytes       = page_read_bytes;
+      text_info_.zbytes       = page_zero_bytes;
 
-
-      // printf ("Load seg: upage (%p), offset: %d\n", upage, ofs);
+      swap_info_.idx          = 0;
+      swap_info_.loc          = VALHALLA;
 
       // 2. Initialize vm_entry members.
       init_vm_entry (
@@ -532,6 +534,7 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
             upage,      // upage (arg of load_segment)     
             writable,   // Permission
             &text_info_,
+            &swap_info_,
             FILE_BACKED | ELF
           );
 
@@ -633,6 +636,11 @@ setup_stack (const char* arg_pointer, void **esp)
             .zbytes   = 0
         };  // Meaningless.
 
+        struct swap_info sinfo = {
+            .idx      = 0,
+            .loc      = MEMORY
+        };
+
         ASSERT (t_vme != NULL);
 
         init_vm_entry (
@@ -640,6 +648,7 @@ setup_stack (const char* arg_pointer, void **esp)
                 ((uint8_t *) PHYS_BASE) - PGSIZE, // Set upage (vaddr). Recall we are dealing with stack!
                 true, // Writable permission
                 &tinfo,
+                &sinfo,
                 ANONYMOUS
             );
         
@@ -648,16 +657,6 @@ setup_stack (const char* arg_pointer, void **esp)
             free (t_vme);
             ASSERT (false); // Raise panic.
         }
-
-        // Debug
-        
-        // printf ("setup_stack: hash size: %d, %p\n", hash_size( &(thread_current ()->vm) ), &(thread_current ()->vm));
-
-        // printf ("is really? %p\n", 
-        //   find_vme(&(thread_current ()->vm), ((uint8_t *) PHYS_BASE) - PGSIZE)
-        //   );
-
-
       }
       else
         palloc_free_page (kpage);
