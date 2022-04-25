@@ -39,7 +39,12 @@ static struct thread *initial_thread;
 /* Lock used by allocate_tid(). */
 static struct lock tid_lock;
 
-struct lock elf_load_lock;
+// Project 3. VM
+extern struct list lru_list;
+extern struct lock lru_list_lock;
+
+extern struct bitmap *bm_swap;
+extern struct lock bm_swap_lock;
 
 
 /* Stack frame for kernel_thread(). */
@@ -98,7 +103,14 @@ thread_init (void)
   list_init (&ready_list);
   list_init (&all_list);
 
-  lock_init (&elf_load_lock);
+  // Project 3. VM
+  list_init (&lru_list);
+  lock_init (&lru_list_lock);
+
+  // bitmap_create (bm_swap);
+  // free_map = bitmap_create (block_size (fs_device));
+  lock_init (&bm_swap_lock);
+  // printf ("thread_init done\n");
 
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();

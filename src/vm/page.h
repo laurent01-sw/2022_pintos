@@ -28,16 +28,16 @@ struct text_info
 struct vm_entry
 {
     // Project 3.
-    struct hash_elem elem; // Hash table element
+    struct hash_elem elem;  // Hash table element
 
-    uint8_t *vaddr;     // upage, virtual address
-    uint8_t *paddr;     // Physical Address
-    bool writable;      // Write permission
+    uint8_t *vaddr;         // upage, virtual address
+    uint8_t *paddr;         // Physical Address
+    bool writable;          // Write permission
     
     // For demand paging
     struct text_info ti;
 
-    uint32_t page_type; // ANONYM? FILE_BACKED?
+    uint32_t page_type;     // ANONYM? FILE_BACKED?
 };
 
 
@@ -69,3 +69,10 @@ void debug_vm_entry (struct vm_entry *vme);
 
 //
 // 2. Physical Page Representation
+struct page
+{
+    struct list_elem elem;  // List element
+    
+    struct vm_entry *vme;
+};
+

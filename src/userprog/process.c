@@ -25,6 +25,13 @@
 #include "lib/kernel/hash.h"
 #include "vm/page.h"
 
+// Added.
+struct list lru_list;     // Managing dirty pages for swaps.
+struct bitmap *bm_swap;   // Bitmap for managing swap partition.
+
+struct lock lru_list_lock;
+struct lock bm_swap_lock;
+
 extern struct lock filesys_lock;
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);

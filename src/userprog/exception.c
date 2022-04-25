@@ -203,9 +203,21 @@ extern struct lock elf_load_lock;
  * New page fault handler added.
  */
 
-// Complement functions:
-bool handle_addr_range (void *fault_addr);
-void handle_elf_load (void *fault_addr);
+/* Complement functions:
+ *  - is_allowed_addr
+ *  - 
+ */
+bool is_allowed_addr (struct intr_frame *, void *);
+bool is_expand_stack (struct intr_frame*, void *);
+bool is_stack (struct intr_frame*, void *);
+
+
+void handle_expand_stack (struct intr_frame*);
+void handle_elf_load (void *);
+void handle_stack_fault (struct intr_frame*, void *);
+
+
+// #define KILL_APP(X)
 
 void
 handle_mm_fault (
@@ -214,11 +226,8 @@ handle_mm_fault (
         uint32_t code
     )
 {
-   fault_addr = pg_round_down (fault_addr);
-
    // Address range check
-   // ASSERT (fault_addr >= ((void *) 0x08048000));
-   if (!handle_addr_range (fault_addr))
+   if (!is_allowed_addr (f, fault_addr))
    {
       __exit(-1);
       kill (f);
@@ -227,44 +236,80 @@ handle_mm_fault (
    // Fault handling
    switch (code)
    {
-   case 1: // not present
-   case 3:
-   case 5:
-   case 7:
-      handle_elf_load (fault_addr);
+   case 1: /* not present */
+   case 3: /* not present & write */
+      /* Not in user space, not allowed. */
+      __exit (-1);
+         kill (f);
+      
       return;
 
-   case 2: // write
-      
-   case 4: // user
+   case 5: /* not present & user */
+      if (is_stack (f, fault_addr))
+      {
+         __exit (-1);
+         kill (f);
+
+         return;
+      }
+
+   case 7: /* not present & write & user */
+      if (is_stack (f, fault_addr) 
+            && is_expand_stack (f, fault_addr))
+         handle_stack_fault (f, fault_addr);
+
+      else handle_elf_load (fault_addr); // data seg.
+
+      return;
+
+   case 2: /* write */
+   case 4: /* user */
       ASSERT (false);
 
-   default: // Unknown case: killing the process.
+   default: /* Unknown case: killing the process. */
       __exit(-1);
       kill (f);
    }
 }
 
+
+// Checker Functions
 // Checks address range
-bool handle_addr_range (void *fault_addr)
+bool 
+is_allowed_addr (struct intr_frame *f, void *fault_addr)
 {
-   
    return 
-      fault_addr < ((void *) 0x08048000) ? false
-         : true;
+      fault_addr < ((void *) 0x08048000)  ? false :
+      fault_addr >= PHYS_BASE             ? false : 
+      true;
+}
+
+
+bool 
+is_stack (struct intr_frame *f, void *fault_addr)
+{
+   // Is the address off the limit?
+   return !(PHYS_BASE - (PGSIZE * 2000) > fault_addr);
+}
+
+
+bool 
+is_expand_stack (struct intr_frame *f, void *fault_addr)
+{
+   return !((f->esp - fault_addr) > 32);
 }
 
 
 // Demand paging for ELF load
-void handle_elf_load (void *fault_addr)
+void 
+handle_elf_load (void *fault_addr)
 {
    struct thread *t = thread_current ();
    struct vm_entry *vme;
    uint8_t *kpage;
 
-   // printf ("  > handle_elf_load\n");
-   // printf ("    fault_addr: %p\n", fault_addr);
-   
+   fault_addr = pg_round_down (fault_addr);
+
    vme = find_vme (&(t->vm), fault_addr);
    kpage = palloc_get_page (PAL_USER);
    
@@ -288,4 +333,53 @@ void handle_elf_load (void *fault_addr)
       palloc_free_page (kpage);
       ASSERT (false);
    }
+}
+
+
+void 
+handle_stack_fault (struct intr_frame *f, void *fault_addr)
+{
+   struct thread *t = thread_current ();
+   struct vm_entry *vme;
+   uint8_t *kpage;
+
+   vme = find_vme (&(t->vm), pg_round_down (fault_addr) + PGSIZE);
+
+   if (vme == NULL) // Make it continuous, for large stack
+      handle_stack_fault (f, fault_addr + PGSIZE);
+   
+   vme = malloc (sizeof (struct vm_entry));
+   kpage = palloc_get_page (PAL_USER | PAL_ZERO);
+
+   struct text_info tinfo = {
+      .owner    = t,
+      .exe_file = 0,
+      .ofs      = 0,
+      .rbytes   = 0,
+      .zbytes   = 0
+   };  // Meaningless.
+
+   ASSERT (vme != NULL);
+
+   init_vm_entry (
+            vme,
+            pg_round_down (fault_addr), // Set upage (vaddr). Recall we are dealing with stack!
+            true, // Writable permission
+            &tinfo,
+            ANONYMOUS
+      );
+
+   if (!install_page (pg_round_down (fault_addr), kpage, true))
+   {
+      free (kpage);
+      ASSERT (false); // Raise panic.
+   }
+
+   vme->paddr = kpage;
+
+   if (!insert_vme ( &(t->vm), vme))
+   {
+      free (vme);
+      ASSERT (false); // Raise panic.
+   }   
 }
