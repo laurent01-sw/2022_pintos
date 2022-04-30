@@ -4,12 +4,13 @@ enum PAGE_TYPE
     ANONYMOUS   = 0x02, 
     FILE_BACKED = 0x04,
     ELF         = 0x08,
+    MMAP        = 0xf0
 };
 
 
 enum LOCATION
 {
-    // NOWHERE     = 0x10,
+    NOWHERE     = 0x10,
     MEMORY      = 0x20,
     DISK        = 0x40,
     VALHALLA    = 0x80
@@ -33,14 +34,34 @@ struct text_info
 };
 
 
-
 // for swap management.
 struct swap_info
 {
-    uint32_t loc;
-    block_sector_t idx;
+    uint32_t loc;               // Location. Where?
+    block_sector_t blk_idx;     // To where in disk?
 };
 
+
+struct mmap_info
+{
+    // struct list_elem l_elem;
+    
+    uint32_t loc;
+    struct file *fobj;
+    int32_t fd;
+
+    int32_t ofs;        // Read offset
+
+    size_t rbytes;      // page_read_bytes
+    size_t zbytes;      // page_zero_bytes
+
+    struct vm_entry *self;
+};
+
+
+// Somewhere defined.
+struct pframe;
+struct mmap_entry;
 
 //
 // Supplement Page Table
@@ -48,17 +69,21 @@ struct swap_info
 struct vm_entry
 {
     // Project 3.
-    struct hash_elem elem;  // Hash table element
+    struct hash_elem h_elem;    // Hash table element
 
-    uint8_t *vaddr;         // upage, virtual address
-    uint8_t *paddr;         // Physical Address
-    bool writable;          // Write permission
+    struct pframe *pf;          // Pframe element
+    struct mmap_entry *me;      // mmap_entry element.
+
+    uint8_t *vaddr;             // upage, virtual address
+    uint8_t *paddr;             // Physical Address
+    bool writable;              // Write permission
     
     // For demand paging
     struct text_info ti;
     struct swap_info si;
+    struct mmap_info mi;
 
-    uint32_t page_type;     // ANONYM? FILE_BACKED?
+    uint32_t page_type;         // ANONYM? FILE_BACKED?
 };
 
 
@@ -70,6 +95,7 @@ void init_vm_entry (
         bool,
         struct text_info *,
         struct swap_info *,
+        struct mmap_info *,
         uint32_t PAGE_TYPE
         );
 

@@ -7,16 +7,28 @@
 
 #include "threads/palloc.h"
 #include "threads/thread.h"
+#include "threads/vaddr.h"
+
+#include "userprog/process.h"
 
 #include "devices/block.h"
+#include "userprog/pagedir.h"
 
 #include "vm/page.h"
 #include "vm/swap.h"
+#include "vm/mmap.h"
+
 
 struct block *swap_device;
 
-extern struct bitmap *bm_swap;
-extern struct lock bm_swap_lock;
+extern struct list lru_list;
+extern struct lock lru_list_lock;
+
+extern struct bitmap *swap_bitmap;
+extern struct lock swap_lock;
+
+extern struct lock filesys_lock;
+
 
 //
 // Initialize bitmap and swap device
@@ -25,19 +37,79 @@ swap_init ()
 {
     swap_device = block_get_role (BLOCK_SWAP);
 
+    // printf ("swap_device: %p\n", swap_device);
+
     if (swap_device == NULL) return;
     // Case when not found.
+
+    swap_bitmap = bitmap_create (block_size (swap_device));
+
+    bitmap_set_all (swap_bitmap, true);
+}
+
+
+//
+bool
+swap_in (struct hash *vm, struct vm_entry *vme)
+{
     
-    bm_swap = bitmap_create (block_size (swap_device));
+    void *kpage = alloc_pframe (PAL_USER | PAL_ZERO);
+    int ofs = 0;
+    
+    if (kpage == NULL || vme->si.loc != DISK) 
+        return false; // Unknown
 
-    bitmap_set_all (bm_swap, false);
-}
+    vme->paddr = kpage;
+
+    if (!install_page (vme->vaddr, kpage, vme->writable))
+        ASSERT (false);
+
+    // Read
+    
+
+    if (vme->page_type == MMAP)
+    {
+        ASSERT (vme->mi.loc == DISK);
 
 
-//
-bool
-swap_in (struct vm_entry *vme, void *page)
-{
+        lock_acquire (&filesys_lock);
+        file_seek (vme->mi.fobj, vme->mi.ofs);
+
+        if (file_read (vme->mi.fobj, kpage, vme->mi.rbytes) != (int) vme->mi.rbytes)
+        {
+            palloc_free_page (kpage);
+            ASSERT (false);
+        }
+
+        memset (kpage + vme->ti.rbytes, 0, vme->ti.zbytes);
+
+        lock_release (&filesys_lock);
+        
+        vme->mi.loc = MEMORY;
+    }
+    else
+    {
+        lock_acquire (&swap_lock);
+        for (ofs = 0; ofs < PGSIZE / BLOCK_SECTOR_SIZE; ofs++)
+        {
+            block_read (swap_device, vme->si.blk_idx + ofs, kpage);
+            kpage += BLOCK_SECTOR_SIZE;
+        }
+
+        bitmap_set_multiple (swap_bitmap, vme->si.blk_idx, PGSIZE / BLOCK_SECTOR_SIZE, true);
+        lock_release (&swap_lock);
+
+        // Set location for swap_info
+        vme->si.blk_idx = 0;
+        vme->si.loc = MEMORY;
+
+    }
+    vme->pf->cnt = 0;
+
+
+    lock_acquire (&lru_list_lock);
+    list_insert_ordered (&lru_list, &(vme->pf->l_elem), access_less, NULL);
+    lock_release (&lru_list_lock);
 
     return true;
 }
@@ -45,31 +117,326 @@ swap_in (struct vm_entry *vme, void *page)
 
 //
 bool
-swap_out (struct vm_entry *vme, void *page)
+swap_out ()
 {
+    return swap_out_normal ();
+}
+
+
+bool
+swap_out_normal ()
+{
+    int i = 0;
+    void *ptr = NULL;
+
+    
+    // Search for free slots
+    // printf ("swap out: remaining - %d\n", bitmap_count (swap_bitmap, 0,  block_size (swap_device), true));
+    lock_acquire (&lru_list_lock);
+    if (list_empty (&lru_list)) 
+    {
+        lock_release (&lru_list_lock);
+        lock_release (&swap_lock);
+
+        return false;
+    }
+
+    // Selection among lru_list, what to evict
+    struct list_elem *pframe_elem = list_pop_back (&lru_list);
+    struct pframe *pf_ = list_entry (pframe_elem, struct pframe, l_elem);
+
+    while (pf_->pinned || pf_->vme->si.loc == VALHALLA)
+    {
+        list_push_front (
+            &(lru_list), &(pf_->l_elem)
+        );
+        pf_ = list_pop_back (&lru_list);
+    } // Search for unpinned, and physically allocated page.
+
+    lru_update ();
+    
+    lock_release (&lru_list_lock);
+    /* Note that the lru_list is always ordered by its pframe->cnt number.
+     */
+
+    /* Validation Checks */
+    // ASSERT (pf_->vme->si.loc == MEMORY); // Cannot evict one already on disk.
+    
+    if (pf_->vme->page_type == MMAP)
+    {
+        /* When mapped file? */
+        // Evict single page
+        lock_acquire (&filesys_lock);
+
+        file_seek (pf_->vme->mi.fobj, pf_->vme->mi.ofs);
+        file_write (
+            pf_->vme->mi.fobj, 
+            pf_->vme->vaddr, 
+            pf_->vme->mi.rbytes);
+
+        lock_release (&filesys_lock);
+
+        pf_->vme->mi.loc = DISK;
+    }
+    else 
+    {
+        lock_acquire (&swap_lock);
+        size_t idx = bitmap_scan_and_flip (swap_bitmap, 0, PGSIZE / BLOCK_SECTOR_SIZE, true); 
+        
+        if (idx == BITMAP_ERROR)
+            ASSERT (false);
+
+        // Set starting point (for swap)
+        ptr = pf_->vme->paddr;
+        
+        // If Stack or ELF,
+        for (i = 0; i < PGSIZE / BLOCK_SECTOR_SIZE; i++)
+        {
+            block_write (swap_device, idx + i, ptr);
+            ptr += BLOCK_SECTOR_SIZE;
+        }
+
+        
+        pf_->vme->si.loc = DISK;
+        pf_->vme->si.blk_idx = idx;
+
+        lock_release (&swap_lock);
+    }
+    
+    pagedir_clear_page (thread_current ()->pagedir, pf_->vme->vaddr);   // Unregister
+    palloc_free_page (pf_->vme->paddr);                                 // Free the target !!!!
+
+
+    pf_->vme->paddr = NULL;
+    /* Update the swap_info members. 
+     */
+    pf_->cnt = 0;
 
     return true;
 }
 
 
+bool
+flush_mmap (uint32_t map_id) // Flushes out all the pages.
+{
+    struct thread *cur = thread_current ();
+    struct list_elem *e;
+    void *paddr;
+
+    for (e = list_begin (&(cur->mmap_pages)); 
+            e != list_end (&(cur->mmap_pages));
+            e = list_next (e))
+    {
+        struct mmap_entry *me = list_entry (e, struct mmap_entry, l_elem);       
+
+        if (pagedir_is_dirty (cur->pagedir, me->vme->vaddr)
+            // && 
+            )
+        {
+            lock_acquire (&filesys_lock);
+            // printf ("file: %p\n", me->vme->mi.fobj);
+            file_seek (me->vme->mi.fobj, me->vme->mi.ofs);
+            file_write (
+                me->vme->mi.fobj, 
+                me->vme->vaddr, 
+                me->vme->mi.rbytes);
+
+            lock_release (&filesys_lock);
+        }
+
+        list_remove (e);
+
+        pagedir_clear_page (cur->pagedir, me->vme->vaddr);
+
+        paddr = me->vme->paddr;         // Physical page?
+        palloc_free_page (paddr);       // Delete the physical page
+        
+        delete_vme (&(cur->vm), me->vme);
+        
+    }
+
+    /* Clear the file. */
+
+    lock_acquire (&filesys_lock);
+
+    file_close (cur->fd_file[map_id]);  // Close the file
+    cur->mmap_file[map_id] = false;     // Set the index to false,
+
+    // Switch the position with existing file
+    cur->fd_pos -= 1;
+    cur->fd[map_id] = cur->fd[cur->fd_pos];
+    cur->fd_file[map_id] = cur->fd_file[cur->fd_pos];
+
+    lock_release (&filesys_lock);
+    
+
+    return true;
+}
+
+
+//
+void *
+alloc_pframe (enum palloc_flags flags)
+{
+    void *kpage = palloc_get_page (flags);
+    struct thread *t = thread_current ();
+
+    if (kpage == NULL)  // Page unavailable
+    {
+        // idx = bitmap_scan_and_flip (swap_bitmap, 0, PGSIZE / BLOCK_SECTOR_SIZE, false); // Search for free slots
+        if (!swap_out ())
+            ASSERT (false);
+
+        // One more try
+        kpage = palloc_get_page (flags);
+        ASSERT (kpage != NULL);
+    }
+
+    return kpage;
+}
+
+
+
+bool
+access_less (const struct list_elem *a_, const struct list_elem *b_,
+            void *aux UNUSED) 
+{
+  const struct pframe *a = list_entry (a_, struct pframe, l_elem);
+  const struct pframe *b = list_entry (b_, struct pframe, l_elem);
+  
+  return a->cnt < b->cnt;
+}
 
 //
 void
-lru_insert ()
-{
+lru_update ()
+{   
+    struct thread *t = thread_current ();
+    struct list_elem *e;
+    // int i;
 
+    struct hash_iterator i;
+
+    hash_first (&i, &(t->vm));
+    while (hash_next (&i))
+    {
+        struct vm_entry *vme = hash_entry (hash_cur (&i), struct vm_entry, h_elem);
+        
+        if (pagedir_is_accessed (t->pagedir, vme->vaddr))
+            vme->pf->cnt += 1;
+    }
+
+    list_sort (&lru_list, access_less, NULL);
 }
 
 
 
-void
-lru_remove ()
+int
+register_mmap (int fd, void *upage)
 {
+    // Demand paging scheme
+    struct thread *cur = thread_current ();
+    int file_size = -1;
 
+    struct vm_entry *vme;
+
+    /* 1. Search file info. */
+    int pos = 0;
+    for (pos = 0; pos < cur->fd_pos; pos++)
+    {
+        if (cur->fd[pos] == fd) // found?
+        {
+            file_size = file_length (cur->fd_file[pos]); // Get the file size.
+            break;
+        }
+    }
+
+    if (file_size < 0)
+        return -1;
+
+    // printf ("fd: %p, %d\n", cur->fd_file[pos], pos);
+    // use the same position index.
+    cur->mmap_file[pos] = true;
+
+    ASSERT (fd != 0);
+    ASSERT (fd != 1);
+    
+    /* 2. Allocate the vm_entry */
+    struct text_info text_info_ = {
+        .owner      = cur,
+        .exe_file   = 0,
+        .rbytes     = 0,
+        .zbytes     = 0,
+    };    
+
+    struct swap_info swap_info_ = {
+        .loc        = VALHALLA,
+        .blk_idx    = 3
+    };
+
+    struct mmap_info mmap_info_ = {
+        .loc        = VALHALLA,
+        .fobj       = cur->fd_file[pos],
+        .fd         = pos,
+        .ofs        = 0,
+        .rbytes     = 0,
+        .zbytes     = 0,
+    };
+
+    upage = pg_round_down (upage);
+    // mmap_info_.rbytes = file_size;
+
+    // printf ("File size: %d\n", file_size);
+    // file_seek (file, ofs);
+    while (file_size > 0) 
+    {
+        
+        mmap_info_.rbytes = file_size < PGSIZE ? file_size          : PGSIZE;
+        mmap_info_.zbytes = file_size < PGSIZE ? PGSIZE - file_size : PGSIZE;
+       
+        if ((vme = find_vme (&(cur->vm), upage)) != NULL)
+        {
+            printf ("Registering: Address found\n");
+        }
+        else
+        {
+            vme = malloc (sizeof (struct vm_entry));           
+            vme->paddr = NULL;
+
+            init_vm_entry (
+                vme,    // vm_entry
+                upage,  // vaddr?
+                true,   // Writable?
+                &text_info_,
+                &swap_info_,
+                &mmap_info_,
+                MMAP
+            );
+
+            vme->me = malloc (sizeof (struct mmap_entry));
+            vme->me->vme = vme; // Points to self.
+
+            mmap_info_.self = vme;
+
+            if (!insert_vme ( &(cur->vm), vme))
+            {
+                // printf ("aSDFasdfv");
+                free (vme);
+                ASSERT (false); // Raise panic.
+            }
+
+            // debug_vm_entry (vme);
+            list_push_back (&(cur->mmap_pages), vme->me);
+        }
+
+        mmap_info_.ofs  += PGSIZE;
+        file_size       -= PGSIZE;
+        upage           += PGSIZE;
+    }
+
+    // printf ("register map > List is (%d)\n", list_empty (&(cur->mmap_pages)));
+    
+    return pos;
 }
-
-
-
-
 
 

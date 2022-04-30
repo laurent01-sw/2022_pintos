@@ -25,13 +25,15 @@
 #include "lib/kernel/hash.h"
 #include "devices/block.h"
 #include "vm/page.h"
+#include "vm/swap.h"
+#include "vm/mmap.h"
 
 // Added.
 struct list lru_list;     // Managing dirty pages for swaps.
-struct bitmap *bm_swap;   // Bitmap for managing swap partition.
+struct bitmap *swap_bitmap;   // Bitmap for managing swap partition.
 
 struct lock lru_list_lock;
-struct lock bm_swap_lock;
+struct lock swap_lock;
 
 extern struct lock filesys_lock;
 static thread_func start_process NO_RETURN;
@@ -289,6 +291,8 @@ load (const char *file_name, void (**eip) (void), void **esp)
     goto done;
   }
 
+  list_init (&(t->mmap_pages));
+
   /* Open executable file. */
   lock_acquire(&filesys_lock);
   file = filesys_open (exe_name);
@@ -470,6 +474,8 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
   // Added: Project 3.
   struct text_info text_info_;
   struct swap_info swap_info_;
+  struct mmap_info mmap_info_;
+
   struct vm_entry *t_vme;
 
   text_info_.ofs = ofs;
@@ -525,9 +531,18 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
       text_info_.rbytes       = page_read_bytes;
       text_info_.zbytes       = page_zero_bytes;
 
-      swap_info_.idx          = 0;
       swap_info_.loc          = VALHALLA;
+      swap_info_.blk_idx      = 3;
 
+      mmap_info_.loc          = VALHALLA;
+      // mmap_info_.blk_idx      = 3;
+      mmap_info_.fobj         = NULL;
+      mmap_info_.fd           = 0;
+      mmap_info_.ofs          = 0;
+      mmap_info_.rbytes       = 0;
+      mmap_info_.zbytes       = 0;
+      mmap_info_.self         = t_vme;
+      
       // 2. Initialize vm_entry members.
       init_vm_entry (
             t_vme,      // Target
@@ -535,7 +550,8 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
             writable,   // Permission
             &text_info_,
             &swap_info_,
-            FILE_BACKED | ELF
+            &mmap_info_,
+            ELF
           );
 
       
@@ -603,7 +619,8 @@ setup_stack (const char* arg_pointer, void **esp)
   uint8_t *kpage;
   bool success = false;
 
-  kpage = palloc_get_page (PAL_USER | PAL_ZERO);
+  // kpage = palloc_get_page (PAL_USER | PAL_ZERO);
+  kpage = alloc_pframe (PAL_USER | PAL_ZERO);
   if (kpage != NULL) 
     {
       success = install_page (((uint8_t *) PHYS_BASE) - PGSIZE, kpage, true);
@@ -637,8 +654,18 @@ setup_stack (const char* arg_pointer, void **esp)
         };  // Meaningless.
 
         struct swap_info sinfo = {
-            .idx      = 0,
-            .loc      = MEMORY
+            .loc      = MEMORY,
+            .blk_idx  = 3
+        };
+
+        struct mmap_info minfo = {
+            .loc      = VALHALLA,
+            .fobj     = NULL,
+            .fd       = 0,
+            .ofs      = 0,
+            .rbytes   = 0,
+            .zbytes   = 0,
+            .self     = t_vme
         };
 
         ASSERT (t_vme != NULL);
@@ -649,8 +676,11 @@ setup_stack (const char* arg_pointer, void **esp)
                 true, // Writable permission
                 &tinfo,
                 &sinfo,
+                &minfo,
                 ANONYMOUS
             );
+
+        t_vme->paddr = kpage;
         
         if (!insert_vme ( &(thread_current ()->vm), t_vme))
         {

@@ -19,6 +19,7 @@
 
 #include "vm/page.h"
 #include "vm/swap.h"
+#include "vm/mmap.h"
 
 /* Random value for struct thread's `magic' member.
    Used to detect stack overflow.  See the big comment at the top
@@ -46,8 +47,8 @@ static struct lock tid_lock;
 extern struct list lru_list;
 extern struct lock lru_list_lock;
 
-extern struct bitmap *bm_swap;
-extern struct lock bm_swap_lock;
+extern struct bitmap *swap_bitmap;
+extern struct lock swap_lock;
 
 extern struct block *swap_device;
 
@@ -112,8 +113,7 @@ thread_init (void)
   list_init (&lru_list);
   lock_init (&lru_list_lock);
 
-  swap_init ();
-  lock_init (&bm_swap_lock);
+  lock_init (&swap_lock);
 
   /* Set up a thread structure for the running thread. */
   initial_thread = running_thread ();

@@ -117,6 +117,9 @@ struct thread
 
     // Project 3. VM
     struct hash vm; // page table (supplement)
+    
+    bool mmap_file[128];
+    struct list mmap_pages;
 
     /* Owned by thread.c. */
     unsigned magic;                     /* Detects stack overflow. */

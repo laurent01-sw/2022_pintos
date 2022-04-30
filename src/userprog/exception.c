@@ -1,10 +1,10 @@
-#include "userprog/exception.h"
 #include <inttypes.h>
 #include <stdio.h>
 #include "userprog/gdt.h"
 #include "userprog/syscall.h"
 #include "threads/interrupt.h"
 #include "threads/thread.h"
+#include "userprog/exception.h"
 
 // Project 3. VM
 #include "threads/palloc.h"
@@ -13,6 +13,7 @@
 #include "devices/block.h"
 #include "vm/page.h"
 #include "vm/swap.h"
+#include "vm/mmap.h"
 
 /* Number of page faults processed. */
 static long long page_fault_cnt;
@@ -124,7 +125,9 @@ void
 handle_mm_fault (
         struct intr_frame *f,
         void *fault_addr,
-        uint32_t code
+        bool,
+        bool,
+        bool
     );
 
 /* Page fault handler.  This is a skeleton that must be filled in
@@ -141,9 +144,9 @@ handle_mm_fault (
 static void
 page_fault (struct intr_frame *f) 
 {
-  uint32_t not_present;  /* True: not-present page, false: writing r/o page. */
-  uint32_t write;        /* True: access was write, false: access was read. */
-  uint32_t user;         /* True: access by user, false: access by kernel. */
+  bool not_present;  /* True: not-present page, false: writing r/o page. */
+  bool write;        /* True: access was write, false: access was read. */
+  bool user;         /* True: access by user, false: access by kernel. */
   void *fault_addr;  /* Fault address. */
 
   /* Obtain faulting address, the virtual address that was
@@ -168,10 +171,9 @@ page_fault (struct intr_frame *f)
   user = (f->error_code & PF_U) != 0;
   
   // Project 3: VM
-  uint32_t code = ((user << 2) | (write << 1) | (not_present));
 
 //   printf ("Original fault: %p\n", fault_addr);
-  handle_mm_fault (f, fault_addr, code);
+  handle_mm_fault (f, fault_addr, not_present, write, user);
 
   return;
 
@@ -209,14 +211,6 @@ extern struct lock elf_load_lock;
  *  - is_allowed_addr
  *  - 
  */
-bool is_allowed_addr (struct intr_frame *, void *);
-bool is_expand_stack (struct intr_frame*, void *);
-bool is_stack (struct intr_frame*, void *);
-
-
-void handle_expand_stack (struct intr_frame*);
-void handle_elf_load (void *);
-void handle_stack_fault (struct intr_frame*, void *);
 
 
 #define KILL_APP(F) \
@@ -227,41 +221,72 @@ void
 handle_mm_fault (
         struct intr_frame *f,
         void *fault_addr,
-        uint32_t code
+        bool not_present, 
+        bool write, 
+        bool user
     )
 {
-
+   
    struct vm_entry *vme;
    struct thread *cur = thread_current ();
 
-   // Address range check
+   // printf ("fault_addr %p\n", fault_addr);
+
+   if (!not_present)
+      KILL_APP (f);
+
+   // 1. Address range check
    if (!is_allowed_addr (f, fault_addr))
       KILL_APP (f);
-      
-   // Fault handling
-   switch (code)
+
+   // 2. Is swapped?
+   vme = find_vme (&(cur->vm), pg_round_down (fault_addr));
+   if (vme != NULL && vme->si.loc == DISK)
    {
-   case 5:  /* not present & user */
-      if (is_stack (f, fault_addr))
-         KILL_APP (f);
-      else
-         handle_elf_load (fault_addr); // data seg.
+      vme->pf->pinned = true;
 
+      if (!swap_in(&(cur->vm), vme))
+         ASSERT (false);
+
+      vme->pf->pinned = false;
       return;
-
-   case 7:  /* not present & write & user */
-      if (is_stack (f, fault_addr) 
-            && is_expand_stack (f, fault_addr))
-         handle_stack_fault (f, fault_addr);
-
-      else
-         handle_elf_load (fault_addr); // data seg.
-
-      return;
-
-   default: /* Unknown case: killing the process. */
-      KILL_APP (f);
    }
+
+#define __VALID_STACK__ \
+   (f->esp <= fault_addr || \
+   fault_addr == f->esp - 4 || \
+   fault_addr == f->esp - 32) && \
+   ((PHYS_BASE - pg_round_down (fault_addr)) <= (1 << 23) \
+   && (uint32_t*)fault_addr >= (f->esp - 32))
+   if (vme == NULL)
+   {
+      // Check valid stack
+      if (__VALID_STACK__)
+      {
+         handle_stack_fault (f, fault_addr);
+         return;
+      }
+
+      else
+         KILL_APP (f);
+
+      return;
+   }
+
+   // 3. Cases handling
+   if (vme->writable == false && write)
+      KILL_APP (f);
+
+   if (vme->page_type == MMAP)
+      handle_mmap_fault (fault_addr);
+
+   else if (vme->page_type == ELF)
+      handle_load_elf (fault_addr);
+
+   else
+      KILL_APP (f);
+   
+   return ;
 }
 
 
@@ -286,15 +311,20 @@ is_stack (struct intr_frame *f, void *fault_addr)
 
 
 bool 
-is_expand_stack (struct intr_frame *f, void *fault_addr)
+is_stack_access (struct intr_frame *f, void *fault_addr)
 {
-   return !((f->esp - fault_addr) > 32);
+   if (f->esp < fault_addr) return true;
+   
+   bool res = ((PHYS_BASE - pg_round_down (fault_addr)) <= (1 << 23) 
+         && (uint32_t*)fault_addr >= (f->esp - 32));
+   // printf ("addr: %p, %d\n", fault_addr, res);
+   return res;
 }
 
 
 // Demand paging for ELF load
 void 
-handle_elf_load (void *fault_addr)
+handle_load_elf (void *fault_addr)
 {
    struct thread *t = thread_current ();
    struct vm_entry *vme;
@@ -303,7 +333,8 @@ handle_elf_load (void *fault_addr)
    fault_addr = pg_round_down (fault_addr);
 
    vme = find_vme (&(t->vm), fault_addr);
-   kpage = palloc_get_page (PAL_USER);
+   
+   kpage =  alloc_pframe (PAL_USER);
    
    ASSERT (vme != NULL);
    ASSERT (kpage != NULL);
@@ -318,7 +349,9 @@ handle_elf_load (void *fault_addr)
    }
 
    memset (kpage + vme->ti.rbytes, 0, vme->ti.zbytes);
+
    vme->paddr = kpage;
+   vme->si.loc = MEMORY;
 
    if (!install_page (vme->vaddr, kpage, vme->writable)) 
    {
@@ -335,13 +368,16 @@ handle_stack_fault (struct intr_frame *f, void *fault_addr)
    struct vm_entry *vme;
    uint8_t *kpage;
 
+   // printf ("esp: %p, fault_addr: %p\n", f->esp, fault_addr);
+
    vme = find_vme (&(t->vm), pg_round_down (fault_addr) + PGSIZE);
 
    if (vme == NULL) // Make it continuous, for large stack
       handle_stack_fault (f, fault_addr + PGSIZE);
    
    vme = malloc (sizeof (struct vm_entry));
-   kpage = palloc_get_page (PAL_USER | PAL_ZERO);
+   // kpage = palloc_get_page (PAL_USER | PAL_ZERO);
+   kpage = alloc_pframe (PAL_USER | PAL_ZERO);
 
    struct text_info tinfo = {
       .owner    = t,
@@ -352,8 +388,18 @@ handle_stack_fault (struct intr_frame *f, void *fault_addr)
    };  // Meaningless.
 
    struct swap_info sinfo = {
-      .idx      = 0,
-      .loc      = MEMORY
+      .loc      = MEMORY,
+      .blk_idx  = vme->si.blk_idx
+   };
+
+   struct mmap_info minfo = {
+      .loc        = VALHALLA,
+      .fobj       = NULL,
+      .fd         = 0,
+      .ofs        = 0,
+      .rbytes     = 0,
+      .zbytes     = 0,
+      .self       = vme
    };
 
    ASSERT (vme != NULL);
@@ -364,6 +410,7 @@ handle_stack_fault (struct intr_frame *f, void *fault_addr)
             true, // Writable permission
             &tinfo,
             &sinfo,
+            &minfo,
             ANONYMOUS
       );
 
@@ -380,4 +427,103 @@ handle_stack_fault (struct intr_frame *f, void *fault_addr)
       free (vme);
       ASSERT (false); // Raise panic.
    }   
+}
+
+
+void
+handle_mmap_fault (void *fault_addr)
+{
+   struct thread *t = thread_current ();
+   struct vm_entry *vme;
+   uint8_t *kpage;
+
+   fault_addr = pg_round_down (fault_addr);
+
+   vme = find_vme (&(t->vm), fault_addr);
+   kpage = alloc_pframe (PAL_USER | PAL_ZERO);
+   
+   ASSERT (vme != NULL);
+   ASSERT (kpage != NULL);
+
+   // Lookup the disk
+   file_seek (vme->mi.fobj, vme->mi.ofs);
+
+   if (file_read (vme->mi.fobj, kpage, vme->mi.rbytes) != (int) vme->mi.rbytes)
+   {
+      palloc_free_page (kpage);
+      ASSERT (false);
+   }
+
+   memset (kpage + vme->mi.rbytes, 0, vme->mi.zbytes);
+
+   vme->paddr = kpage;
+   vme->mi.loc = MEMORY;
+
+   if (!install_page (vme->vaddr, kpage, vme->writable)) 
+   {
+      palloc_free_page (kpage);
+      ASSERT (false);
+   }
+}
+
+
+void 
+handle_null (void *fault_addr, bool writable)
+{
+   struct thread *t = thread_current ();
+   struct vm_entry *vme;
+   uint8_t *kpage;
+   
+   vme = malloc (sizeof (struct vm_entry));
+   
+   kpage = alloc_pframe (PAL_USER | PAL_ZERO);
+
+   struct text_info tinfo = {
+      .owner    = t,
+      .exe_file = 0,
+      .ofs      = 0,
+      .rbytes   = 0,
+      .zbytes   = 0
+   };  // Meaningless.
+
+   struct swap_info sinfo = {
+      .loc      = MEMORY,
+      .blk_idx  = vme->si.blk_idx
+   };
+
+   struct mmap_info minfo = {
+      .loc        = MEMORY,
+      .fobj       = NULL,
+      .fd         = 0,
+      .ofs        = 0,
+      .rbytes     = 0,
+      .zbytes     = 0,
+      .self       = vme
+   };
+
+   ASSERT (vme != NULL);
+
+   init_vm_entry (
+            vme,
+            pg_round_down (fault_addr),   // Set upage (vaddr). Recall we are dealing with stack!
+            writable,                     // Writable permission
+            &tinfo,
+            &sinfo,
+            &minfo,
+            ANONYMOUS
+      );
+
+   if (!install_page (pg_round_down (fault_addr), kpage, true))
+   {
+      free (kpage);
+      ASSERT (false); // Raise panic.
+   }
+
+   vme->paddr = kpage;
+
+   if (!insert_vme ( &(t->vm), vme))
+   {
+      free (vme);
+      ASSERT (false); // Raise panic.
+   }
 }

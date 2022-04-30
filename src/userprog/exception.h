@@ -9,4 +9,14 @@
 void exception_init (void);
 void exception_print_stats (void);
 
+// Project 3.
+bool is_allowed_addr (struct intr_frame *, void *);
+bool is_stack_access (struct intr_frame*, void *);
+
+void handle_load_elf (void *);
+void handle_stack_fault (struct intr_frame*, void *);
+void handle_mmap_fault (void *);
+
+void handle_null (void *, bool);
+
 #endif /* userprog/exception.h */

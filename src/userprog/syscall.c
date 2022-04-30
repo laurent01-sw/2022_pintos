@@ -14,6 +14,12 @@
 #include "filesys/inode.h"
 #include "filesys/filesys.h"
 
+// Add
+#include "userprog/exception.h"
+#include "vm/page.h"
+#include "vm/swap.h"
+#include "vm/mmap.h"
+
 
 static void syscall_handler (struct intr_frame *);
 static bool check_address(void * address);
@@ -137,7 +143,7 @@ syscall_handler (struct intr_frame *f)
 
     for(i = 0; i < cur->fd_pos; i++)
     {
-      if(cur->fd[i] == *fd)
+      if(cur->fd[i] == *fd && !cur->mmap_file[i])
       {
         file_close(cur->fd_file[i]);
         cur->fd_pos -= 1;
@@ -152,31 +158,50 @@ syscall_handler (struct intr_frame *f)
     if(bad_ptr(usp + 24, f)) break;
     if(bad_ptr(usp + 28, f)) break;
 
-    fd = usp + 20;
-    buffer = usp + 24;
-    size = usp + 28;
+    fd      = usp + 20;
+    buffer  = usp + 24;
+    size    = usp + 28;
 
-    if(!check_address(*buffer))
+    if (!check_address (*buffer))
     {
       f->eax = -1;
       __exit(-1);
     }
-    else if(*fd == 1)
+    else if (*fd == 1)
     {
+      // Increase stack when needed.
+      // Alloc pages
+      void *upage = pg_round_down (f->esp);
+      while (upage < *buffer + *size)
+      {
+        if (is_stack_access (f, upage))
+          handle_stack_fault (f, upage);
+        upage += PGSIZE;
+      }
+
       putbuf(*buffer, *size);
       f->eax = *size;
     }
-    else if(*fd > 1)
+    else if (*fd > 1)
     {
-      lock_acquire(&filesys_lock);
-      for(i=0;i<cur->fd_pos;i++)
+      lock_acquire (&filesys_lock);
+      for(i = 0; i < cur->fd_pos; i++)
       {
-        if(cur->fd[i] == *fd)
+        if (cur->fd[i] == *fd)
         {
-          if(cur->fd_file[i] == NULL)
-            __exit(-1);
+          if(cur->fd_file[i] == NULL) __exit(-1);
           else
-            f->eax = file_write(cur->fd_file[i],*buffer,*size);
+          {
+            // Increase stack when needed.
+            void *upage = pg_round_down (f->esp);
+            while (upage < *buffer + *size)
+            {
+              if (is_stack_access (f, upage))
+                handle_stack_fault (f, upage);
+              upage += PGSIZE;
+            }
+            f->eax = file_write (cur->fd_file[i], *buffer, *size);
+          }
         }
       }
       lock_release(&filesys_lock);
@@ -310,6 +335,33 @@ syscall_handler (struct intr_frame *f)
   case SYS_YIELD:
     thread_yield();
     break;
+
+  // Project 3. VM:
+  case SYS_MMAP:
+    if (bad_ptr (usp + 16, f)) break;
+    if (bad_ptr (usp + 20, f)) break;
+
+    int *fd       = usp + 16;
+    void **upage  = usp + 20;
+
+    if ((f->eax = register_mmap (*fd, *upage)) < 0)
+    {
+      __exit (-1);   
+    }
+
+    break;
+
+  case SYS_MUNMAP:
+    if (bad_ptr (usp + 4, f)) break;
+
+    uint32_t *map_id = usp + 4;
+    if (!flush_mmap (*map_id))
+    {
+      f->eax = -1; 
+      __exit (-1);
+    }
+
+    break;
   }
 }
 
@@ -353,10 +405,17 @@ int32_t __exit(int status)
     printf("%s: exit(%d)\n",thread_name(), status);
     struct thread *cur = thread_current ();
     unsigned int i;
+
+    // lock_acquire (&filesys_lock);
     for(i = 0; i < cur->fd_pos; i++)
     {
-      file_close(cur->fd_file[i]);
+      if (cur->mmap_file[cur->fd[i]] == true)
+        flush_mmap (cur->fd[i]);  // Gets lock inside of the function.
+                            // Do not require lock.
+
     }
+    // lock_release (&filesys_lock);
+
     struct list_elem* e;
     cur->exit_status = status;
     /* Cleaning Up Child Process */
