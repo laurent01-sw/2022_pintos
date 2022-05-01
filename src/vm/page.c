@@ -193,7 +193,8 @@ find_vme (struct hash *vm, void *vaddr)
 
 
 // Deletes vm_entry, 'and' associated pframe.
-bool delete_vme(struct hash *vm, struct vm_entry *vme)
+bool 
+delete_vme (struct hash *vm, struct vm_entry *vme)
 {
     struct hash_elem *e = hash_delete (vm, &(vme->h_elem));
     
@@ -208,11 +209,15 @@ bool delete_vme(struct hash *vm, struct vm_entry *vme)
     list_remove (&(vme->pf->l_elem));   // 1. Remove from the lru
     lock_release (&lru_list_lock);
 
-    if (vme->page_type != MMAP)
+    if (vme->page_type != MMAP && vme->si.loc == DISK)
     {
         lock_acquire (&swap_lock);
         bitmap_set_multiple (swap_device, vme->si.blk_idx, PGSIZE / BLOCK_SECTOR_SIZE, true);
         lock_release (&swap_lock);
+    }
+    else
+    {
+        ;
     }
 
     free (vme->pf);
@@ -220,8 +225,8 @@ bool delete_vme(struct hash *vm, struct vm_entry *vme)
     if (vme->me != NULL)
         free (vme->me);
 
-    if (vme->mi.fobj != NULL)
-        file_close (vme->mi.fobj);
+    // if (vme->mi.fobj != NULL)
+    //     file_close (vme->mi.fobj);
 
     free (vme);
     return true;

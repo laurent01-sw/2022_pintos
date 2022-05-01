@@ -219,8 +219,6 @@ handle_mm_fault (
    
    struct vm_entry *vme;
    struct thread *cur = thread_current ();
-
-   // printf ("fault_addr %p\n", fault_addr);
    
    if (!not_present)
       KILL_APP (f);
@@ -243,15 +241,15 @@ handle_mm_fault (
    }
 
 
-#define __VALID_STACK__ \
-   (f->esp <= fault_addr || fault_addr == f->esp - 4 || fault_addr == f->esp - 32) && \
-   ((PHYS_BASE - pg_round_down (fault_addr)) <= (1 << 23) \
-      && (uint32_t*)fault_addr >= (f->esp - 32))
+#define __VALID_STACK__(ESP, FA) \
+   (ESP <= FA || FA == ESP - 4 || FA == ESP - 32) && \
+   ((PHYS_BASE - pg_round_down (FA)) <= (1 << 23) \
+      && (uint32_t*)FA >= (ESP - 32))
 
    
    if (vme == NULL)
    {
-      if (__VALID_STACK__) // Check valid stack
+      if (__VALID_STACK__(f->esp, fault_addr)) // Check valid stack
          handle_stack_fault (f, fault_addr);
 
       else
@@ -260,7 +258,6 @@ handle_mm_fault (
       return;
    }
 
-   // debug_vm_entry (vme);
    // 3. Cases handling
    if (vme->writable == false && write)
       KILL_APP (f);
@@ -415,6 +412,8 @@ handle_mmap_fault (void *fault_addr)
    struct vm_entry *vme;
    uint8_t *kpage;
 
+   // printf ("handle_mmap_fault\n");
+
    fault_addr = pg_round_down (fault_addr);
 
    vme = find_vme (&(t->vm), fault_addr);
@@ -507,5 +506,51 @@ handle_null (void *fault_addr, bool writable)
    {
       free (vme);
       ASSERT (false); // Raise panic.
+   }
+}
+
+
+
+void
+borrow_stack (struct intr_frame *f, void *addr, uint32_t size)
+{
+   void *req_addr = pg_round_down (addr);
+
+   while (req_addr < addr + size)
+   {
+      if (__VALID_STACK__(f->esp, addr)) // Check valid stack
+         handle_stack_fault (f, addr);
+
+      req_addr += PGSIZE;
+   }
+}
+
+
+void
+return_stack (void *addr, uint32_t size)
+{
+   void *req_addr = pg_round_down (addr);
+   struct vm_entry *vme;
+
+    while (req_addr < req_addr + size)
+    {
+      delete_vme (
+         &(thread_current ()->vm), 
+         find_vme (&(thread_current ()->vm), req_addr)
+      );
+
+      req_addr += PGSIZE;      
+    }
+}
+
+
+void
+force_reserve_pages (void *addr, uint32_t size)
+{
+   void *req_addr = pg_round_down (addr);
+   while (req_addr < addr + size)
+   {
+      swap_out ();
+      req_addr += PGSIZE;
    }
 }

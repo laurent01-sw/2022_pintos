@@ -131,9 +131,6 @@ swap_out_normal ()
     int i = 0;
     void *ptr = NULL;
 
-    
-    // Search for free slots
-    // printf ("swap out: remaining - %d\n", bitmap_count (swap_bitmap, 0,  block_size (swap_device), true));
     lock_acquire (&lru_list_lock);
     if (list_empty (&lru_list)) 
     {
@@ -165,8 +162,8 @@ swap_out_normal ()
     {
         /* When mapped file? */
         // Evict single page
-        if (!lock_held_by_current_thread (&filesys_lock))
-            lock_acquire (&filesys_lock);
+        // if (!lock_held_by_current_thread (&filesys_lock))
+        lock_acquire (&filesys_lock);
 
         file_seek (pf_->vme->mi.fobj, pf_->vme->mi.ofs);
         file_write (
@@ -174,8 +171,8 @@ swap_out_normal ()
             pf_->vme->vaddr, 
             pf_->vme->mi.rbytes);
 
-        if (lock_held_by_current_thread (&filesys_lock))
-            lock_release (&filesys_lock);
+        // if (lock_held_by_current_thread (&filesys_lock))
+        lock_release (&filesys_lock);
 
         pf_->vme->mi.loc = DISK;
     }
@@ -207,10 +204,7 @@ swap_out_normal ()
     pagedir_clear_page (thread_current ()->pagedir, pf_->vme->vaddr);   // Unregister
     palloc_free_page (pf_->vme->paddr);                                 // Free the target !!!!
 
-
     pf_->vme->paddr = NULL;
-    /* Update the swap_info members. 
-     */
     pf_->cnt = 0;
 
     return true;
@@ -226,34 +220,43 @@ flush_mmap (uint32_t map_id) // Flushes out all the pages.
     void *paddr;
 
     int fd_idx = cur->fd[map_id];
-    // printf ("flush_mmap: mapid -> %d, actual id -> %d\n", map_id, fd_idx);
 
+    /* Validation Check */
+    if (cur->mmap_file[fd_idx] == false)
+        return false;
 
     for (e = list_begin (&(cur->mmap_pages)); 
             e != list_end (&(cur->mmap_pages)); )
     {
-        struct mmap_entry *me = list_entry (e, struct mmap_entry, l_elem);       
-        
+        me = list_entry (e, struct mmap_entry, l_elem);       
+
         if (me->vme->mi.fobj == cur->fd_file[fd_idx])
         {
-            // printf ("writing to disk\n");
             if (pagedir_is_dirty (cur->pagedir, me->vme->vaddr))
             {
-                if (!lock_held_by_current_thread (&filesys_lock))
-                    lock_acquire (&filesys_lock);
+                // if (!lock_held_by_current_thread (&filesys_lock))
+                lock_acquire (&filesys_lock); //printf ("content: %s\n", me->vme->vaddr);
 
-                file_seek (me->vme->mi.fobj, me->vme->mi.ofs);
-                file_write (
+                file_allow_write (me->vme->mi.fobj);
+
+                // file_seek (me->vme->mi.fobj, me->vme->mi.ofs);
+                file_seek (me->vme->mi.fobj, 0);
+                if (file_write_at (
                     me->vme->mi.fobj, 
                     me->vme->vaddr, 
-                    me->vme->mi.rbytes);
-
-                if (lock_held_by_current_thread (&filesys_lock))
-                    lock_release (&filesys_lock);
+                    me->vme->mi.rbytes,
+                    me->vme->mi.ofs)
+                        != (int)(me->vme->mi.rbytes)
+                    )
+                        return (false);
+                
+                // if (lock_held_by_current_thread (&filesys_lock))
+                lock_release (&filesys_lock);
             }
 
             next_e = list_next (e);
-
+            list_remove (e);
+            
             pagedir_clear_page (cur->pagedir, me->vme->vaddr);
 
             paddr = me->vme->paddr;         // Physical page?
@@ -267,15 +270,8 @@ flush_mmap (uint32_t map_id) // Flushes out all the pages.
             e = list_next (e);
         }        
     }
-
     /* Clear the file. */
-    // file_close (cur->fd_file[fd_idx]);  // Close the file
     cur->mmap_file[fd_idx] = false;     // Set the index to false,
-
-    // // Switch the position with existing file
-    // cur->fd_pos -= 1;
-    // cur->fd[fd_idx] = cur->fd[cur->fd_pos];
-    // cur->fd_file[fd_idx] = cur->fd_file[cur->fd_pos];
 
     return true;
 }
@@ -348,7 +344,7 @@ register_mmap (int fd, void *upage)
     struct vm_entry *vme;
 
     /* 1. Search file info. */
-    int pos = 0;
+    int pos = 0;            // Internal index.
     for (pos = 0; pos < cur->fd_pos; pos++)
     {
         if (cur->fd[pos] == fd) // found?
@@ -435,6 +431,8 @@ register_mmap (int fd, void *upage)
         mmap_info_.ofs  += PGSIZE;
         file_size       -= PGSIZE;
         upage           += PGSIZE;
+
+        // debug_vm_entry (vme);
     }
 
     return cur->fd[pos];

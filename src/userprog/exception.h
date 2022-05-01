@@ -19,4 +19,9 @@ void handle_mmap_fault (void *);
 
 void handle_null (void *, bool);
 
+
+void borrow_stack (struct intr_frame *f, void *addr, uint32_t size);
+void return_stack (void *addr, uint32_t size);
+void force_reserve_pages (void *addr, uint32_t size);
+
 #endif /* userprog/exception.h */

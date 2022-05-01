@@ -392,15 +392,18 @@ int32_t __exit(int status)
     unsigned int i;
 
     // lock_acquire (&filesys_lock);
-    for(i = 0; i < cur->fd_pos; i++)
+    for (i = 0; i < cur->fd_pos; i++)
     {
-      if (cur->mmap_file[cur->fd[i]] == true)
-        flush_mmap (cur->fd[i]);  // Gets lock inside of the function.
-                            // Do not require lock.
 
+      flush_mmap (cur->fd[i]);  // Gets lock inside of the function.
+                                // Do not require lock.
+      if (!lock_held_by_current_thread (&filesys_lock))
+        lock_acquire (&filesys_lock);
+
+      file_close (cur->fd_file[i]);
+      lock_release (&filesys_lock);
     }
     // lock_release (&filesys_lock);
-
     struct list_elem* e;
     cur->exit_status = status;
     /* Cleaning Up Child Process */
