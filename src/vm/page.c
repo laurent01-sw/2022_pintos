@@ -196,7 +196,7 @@ find_vme (struct hash *vm, void *vaddr)
 bool delete_vme(struct hash *vm, struct vm_entry *vme)
 {
     struct hash_elem *e = hash_delete (vm, &(vme->h_elem));
-
+    
     if (e == NULL) // Case when no element is found.
         return true;
 

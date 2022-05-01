@@ -71,8 +71,9 @@ swap_in (struct hash *vm, struct vm_entry *vme)
     {
         ASSERT (vme->mi.loc == DISK);
 
+        if (!lock_held_by_current_thread (&filesys_lock))
+            lock_acquire (&filesys_lock);
 
-        lock_acquire (&filesys_lock);
         file_seek (vme->mi.fobj, vme->mi.ofs);
 
         if (file_read (vme->mi.fobj, kpage, vme->mi.rbytes) != (int) vme->mi.rbytes)
@@ -83,7 +84,8 @@ swap_in (struct hash *vm, struct vm_entry *vme)
 
         memset (kpage + vme->ti.rbytes, 0, vme->ti.zbytes);
 
-        lock_release (&filesys_lock);
+        if (lock_held_by_current_thread (&filesys_lock))
+            lock_release (&filesys_lock);
         
         vme->mi.loc = MEMORY;
     }
@@ -163,7 +165,8 @@ swap_out_normal ()
     {
         /* When mapped file? */
         // Evict single page
-        lock_acquire (&filesys_lock);
+        if (!lock_held_by_current_thread (&filesys_lock))
+            lock_acquire (&filesys_lock);
 
         file_seek (pf_->vme->mi.fobj, pf_->vme->mi.ofs);
         file_write (
@@ -171,7 +174,8 @@ swap_out_normal ()
             pf_->vme->vaddr, 
             pf_->vme->mi.rbytes);
 
-        lock_release (&filesys_lock);
+        if (lock_held_by_current_thread (&filesys_lock))
+            lock_release (&filesys_lock);
 
         pf_->vme->mi.loc = DISK;
     }
@@ -217,55 +221,61 @@ bool
 flush_mmap (uint32_t map_id) // Flushes out all the pages.
 {
     struct thread *cur = thread_current ();
-    struct list_elem *e;
+    struct list_elem *e, *next_e;
+    struct mmap_entry *me;
     void *paddr;
 
+    int fd_idx = cur->fd[map_id];
+    // printf ("flush_mmap: mapid -> %d, actual id -> %d\n", map_id, fd_idx);
+
+
     for (e = list_begin (&(cur->mmap_pages)); 
-            e != list_end (&(cur->mmap_pages));
-            e = list_next (e))
+            e != list_end (&(cur->mmap_pages)); )
     {
         struct mmap_entry *me = list_entry (e, struct mmap_entry, l_elem);       
-
-        if (pagedir_is_dirty (cur->pagedir, me->vme->vaddr)
-            // && 
-            )
+        
+        if (me->vme->mi.fobj == cur->fd_file[fd_idx])
         {
-            lock_acquire (&filesys_lock);
-            // printf ("file: %p\n", me->vme->mi.fobj);
-            file_seek (me->vme->mi.fobj, me->vme->mi.ofs);
-            file_write (
-                me->vme->mi.fobj, 
-                me->vme->vaddr, 
-                me->vme->mi.rbytes);
+            // printf ("writing to disk\n");
+            if (pagedir_is_dirty (cur->pagedir, me->vme->vaddr))
+            {
+                if (!lock_held_by_current_thread (&filesys_lock))
+                    lock_acquire (&filesys_lock);
 
-            lock_release (&filesys_lock);
+                file_seek (me->vme->mi.fobj, me->vme->mi.ofs);
+                file_write (
+                    me->vme->mi.fobj, 
+                    me->vme->vaddr, 
+                    me->vme->mi.rbytes);
+
+                if (lock_held_by_current_thread (&filesys_lock))
+                    lock_release (&filesys_lock);
+            }
+
+            next_e = list_next (e);
+
+            pagedir_clear_page (cur->pagedir, me->vme->vaddr);
+
+            paddr = me->vme->paddr;         // Physical page?
+            palloc_free_page (paddr);       // Delete the physical page
+
+            delete_vme (&(cur->vm), me->vme);
+            e = next_e;
         }
-
-        list_remove (e);
-
-        pagedir_clear_page (cur->pagedir, me->vme->vaddr);
-
-        paddr = me->vme->paddr;         // Physical page?
-        palloc_free_page (paddr);       // Delete the physical page
-        
-        delete_vme (&(cur->vm), me->vme);
-        
+        else 
+        {
+            e = list_next (e);
+        }        
     }
 
     /* Clear the file. */
+    // file_close (cur->fd_file[fd_idx]);  // Close the file
+    cur->mmap_file[fd_idx] = false;     // Set the index to false,
 
-    lock_acquire (&filesys_lock);
-
-    file_close (cur->fd_file[map_id]);  // Close the file
-    cur->mmap_file[map_id] = false;     // Set the index to false,
-
-    // Switch the position with existing file
-    cur->fd_pos -= 1;
-    cur->fd[map_id] = cur->fd[cur->fd_pos];
-    cur->fd_file[map_id] = cur->fd_file[cur->fd_pos];
-
-    lock_release (&filesys_lock);
-    
+    // // Switch the position with existing file
+    // cur->fd_pos -= 1;
+    // cur->fd[fd_idx] = cur->fd[cur->fd_pos];
+    // cur->fd_file[fd_idx] = cur->fd_file[cur->fd_pos];
 
     return true;
 }
