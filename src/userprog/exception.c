@@ -171,8 +171,6 @@ page_fault (struct intr_frame *f)
   user = (f->error_code & PF_U) != 0;
   
   // Project 3: VM
-
-//   printf ("Original fault: %p\n", fault_addr);
   handle_mm_fault (f, fault_addr, not_present, write, user);
 
   return;
@@ -191,17 +189,9 @@ page_fault (struct intr_frame *f)
   kill (f);
 }
 
-// extern struct lock filesys_lock;
+
 extern struct lock elf_load_lock;
-
-// #define MAX_STACK_SIZE     (1 << 23)
-
-// bool
-// is_accessing_stack (void *ptr, uint32_t *esp)
-// {
-//   return  ((PHYS_BASE - pg_round_down (ptr)) <= MAX_STACK_SIZE 
-//             && (uint32_t*)ptr >= (esp - 32));
-// }
+extern struct lock filesys_lock;
 
 /* Project 3: VM, Added.
  * New page fault handler added.
@@ -231,7 +221,7 @@ handle_mm_fault (
    struct thread *cur = thread_current ();
 
    // printf ("fault_addr %p\n", fault_addr);
-
+   
    if (!not_present)
       KILL_APP (f);
 
@@ -252,20 +242,17 @@ handle_mm_fault (
       return;
    }
 
+
 #define __VALID_STACK__ \
-   (f->esp <= fault_addr || \
-   fault_addr == f->esp - 4 || \
-   fault_addr == f->esp - 32) && \
+   (f->esp <= fault_addr || fault_addr == f->esp - 4 || fault_addr == f->esp - 32) && \
    ((PHYS_BASE - pg_round_down (fault_addr)) <= (1 << 23) \
-   && (uint32_t*)fault_addr >= (f->esp - 32))
+      && (uint32_t*)fault_addr >= (f->esp - 32))
+
+   
    if (vme == NULL)
    {
-      // Check valid stack
-      if (__VALID_STACK__)
-      {
+      if (__VALID_STACK__) // Check valid stack
          handle_stack_fault (f, fault_addr);
-         return;
-      }
 
       else
          KILL_APP (f);
@@ -273,6 +260,7 @@ handle_mm_fault (
       return;
    }
 
+   // debug_vm_entry (vme);
    // 3. Cases handling
    if (vme->writable == false && write)
       KILL_APP (f);
@@ -299,14 +287,6 @@ is_allowed_addr (struct intr_frame *f, void *fault_addr)
       fault_addr < ((void *) 0x08048000)  ? false :
       fault_addr >= PHYS_BASE             ? false : 
       true;
-}
-
-
-bool 
-is_stack (struct intr_frame *f, void *fault_addr)
-{
-   // Is the address off the limit?
-   return !(PHYS_BASE - (PGSIZE * 2000) > fault_addr);
 }
 
 
@@ -367,8 +347,6 @@ handle_stack_fault (struct intr_frame *f, void *fault_addr)
    struct thread *t = thread_current ();
    struct vm_entry *vme;
    uint8_t *kpage;
-
-   // printf ("esp: %p, fault_addr: %p\n", f->esp, fault_addr);
 
    vme = find_vme (&(t->vm), pg_round_down (fault_addr) + PGSIZE);
 
@@ -446,6 +424,8 @@ handle_mmap_fault (void *fault_addr)
    ASSERT (kpage != NULL);
 
    // Lookup the disk
+   lock_acquire (&filesys_lock);
+
    file_seek (vme->mi.fobj, vme->mi.ofs);
 
    if (file_read (vme->mi.fobj, kpage, vme->mi.rbytes) != (int) vme->mi.rbytes)
@@ -453,6 +433,8 @@ handle_mmap_fault (void *fault_addr)
       palloc_free_page (kpage);
       ASSERT (false);
    }
+
+   lock_release (&filesys_lock);
 
    memset (kpage + vme->mi.rbytes, 0, vme->mi.zbytes);
 

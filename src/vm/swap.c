@@ -158,9 +158,6 @@ swap_out_normal ()
     lock_release (&lru_list_lock);
     /* Note that the lru_list is always ordered by its pframe->cnt number.
      */
-
-    /* Validation Checks */
-    // ASSERT (pf_->vme->si.loc == MEMORY); // Cannot evict one already on disk.
     
     if (pf_->vme->page_type == MMAP)
     {
@@ -353,8 +350,7 @@ register_mmap (int fd, void *upage)
 
     if (file_size < 0)
         return -1;
-
-    // printf ("fd: %p, %d\n", cur->fd_file[pos], pos);
+    
     // use the same position index.
     cur->mmap_file[pos] = true;
 
@@ -384,10 +380,7 @@ register_mmap (int fd, void *upage)
     };
 
     upage = pg_round_down (upage);
-    // mmap_info_.rbytes = file_size;
 
-    // printf ("File size: %d\n", file_size);
-    // file_seek (file, ofs);
     while (file_size > 0) 
     {
         
@@ -396,7 +389,8 @@ register_mmap (int fd, void *upage)
        
         if ((vme = find_vme (&(cur->vm), upage)) != NULL)
         {
-            printf ("Registering: Address found\n");
+            // printf ("Registering: Address found\n");
+            return -1;
         }
         else
         {
@@ -420,7 +414,6 @@ register_mmap (int fd, void *upage)
 
             if (!insert_vme ( &(cur->vm), vme))
             {
-                // printf ("aSDFasdfv");
                 free (vme);
                 ASSERT (false); // Raise panic.
             }
@@ -434,9 +427,7 @@ register_mmap (int fd, void *upage)
         upage           += PGSIZE;
     }
 
-    // printf ("register map > List is (%d)\n", list_empty (&(cur->mmap_pages)));
-    
-    return pos;
+    return cur->fd[pos];
 }
 
 

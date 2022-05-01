@@ -135,11 +135,24 @@ void debug_vm_entry(struct vm_entry *vme)
     printf ("  - vme->ti.zbytes: %d\n", vme->ti.zbytes);
 
     printf ("   --------\n");
-    printf ("  - vme->si.loc: %p\n", vme->si.loc);
+    
+    switch (vme->si.loc)
+    {
+        case NOWHERE:   printf ("  - vme->si.loc: NOWHERE\n");    break;
+        case MEMORY:    printf ("  - vme->si.loc: MEMORY\n");     break;
+        case DISK:      printf ("  - vme->si.loc: DISK\n");       break;
+        case VALHALLA:  printf ("  - vme->si.loc: VALHALLA\n");   break;
+    }
     printf ("  - vme->si.blk_idx: %d\n", vme->si.blk_idx);
 
     printf ("   --------\n");
-    printf ("  - vme->mi.loc: %p\n", vme->mi.loc);
+    switch (vme->mi.loc)
+    {
+        case NOWHERE:   printf ("  - vme->mi.loc: NOWHERE\n");    break;
+        case MEMORY:    printf ("  - vme->mi.loc: MEMORY\n");     break;
+        case DISK:      printf ("  - vme->mi.loc: DISK\n");       break;
+        case VALHALLA:  printf ("  - vme->mi.loc: VALHALLA\n");   break;
+    }
     printf ("  - vme->mi.fobj: %p\n", vme->mi.fobj);
 
     printf ("  - vme->mi.ofs: %d\n", vme->mi.ofs);

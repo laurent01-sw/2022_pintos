@@ -169,16 +169,6 @@ syscall_handler (struct intr_frame *f)
     }
     else if (*fd == 1)
     {
-      // Increase stack when needed.
-      // Alloc pages
-      void *upage = pg_round_down (f->esp);
-      while (upage < *buffer + *size)
-      {
-        if (is_stack_access (f, upage))
-          handle_stack_fault (f, upage);
-        upage += PGSIZE;
-      }
-
       putbuf(*buffer, *size);
       f->eax = *size;
     }
@@ -192,14 +182,6 @@ syscall_handler (struct intr_frame *f)
           if(cur->fd_file[i] == NULL) __exit(-1);
           else
           {
-            // Increase stack when needed.
-            void *upage = pg_round_down (f->esp);
-            while (upage < *buffer + *size)
-            {
-              if (is_stack_access (f, upage))
-                handle_stack_fault (f, upage);
-              upage += PGSIZE;
-            }
             f->eax = file_write (cur->fd_file[i], *buffer, *size);
           }
         }
@@ -344,9 +326,12 @@ syscall_handler (struct intr_frame *f)
     int *fd       = usp + 16;
     void **upage  = usp + 20;
 
-    if ((f->eax = register_mmap (*fd, *upage)) < 0)
+    if (!is_allowed_addr (f, *upage))
+      f->eax = -1;
+
+    else if ((f->eax = register_mmap (*fd, *upage)) < 0)
     {
-      __exit (-1);   
+      __exit (-1);
     }
 
     break;
