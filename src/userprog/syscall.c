@@ -183,6 +183,12 @@ syscall_handler (struct intr_frame *f)
           else
           {
             f->eax = file_write (cur->fd_file[i], *buffer, *size);
+            if (f->eax == 0)
+            {
+              // If fails, reset the offset and try once more.
+              file_seek (cur->fd_file[i], 0);
+              f->eax = file_write (cur->fd_file[i], *buffer, *size);
+            }
           }
         }
       }

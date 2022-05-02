@@ -33,9 +33,13 @@ bool vm_less(const struct hash_elem *a_, const struct hash_elem *b_,
     return a->vaddr < b->vaddr;
 }
 
+
+extern struct bitmap *swap_bitmap;
+
 // Follows: hash_clear.
-void vm_destroy(struct hash *vm)
+void vm_destroy (struct hash *vm)
 {
+    // printf ("vm_destroy start\n");
     size_t i;
 
     for (i = 0; i < vm->bucket_cnt; i++)
@@ -57,6 +61,7 @@ void vm_destroy(struct hash *vm)
     }
 
     vm->elem_cnt = 0;
+    // printf ("vm_destroy end: bitmap count %d\n", bitmap_count (swap_bitmap, 0, bitmap_size (swap_bitmap), true));
 }
 
 extern struct list lru_list;
@@ -64,6 +69,7 @@ extern struct lock lru_list_lock;
 
 extern struct lock swap_lock;
 extern struct block *swap_device;
+
 
 // Initialize VM struct.
 void init_vm_entry (
@@ -116,53 +122,61 @@ void init_vm_entry (
 
 void debug_vm_entry(struct vm_entry *vme)
 {
-    printf ("  <vme info: %p>\n", vme);
-
-    printf ("  - vme->pf: %p\n", vme->pf);
-    printf ("  - vme->me: %p\n", vme->me);
-
-    printf ("   --------\n");
-    printf ("  - vme->page_type: %p\n", vme->page_type);
-
-    printf ("  - vme->vaddr: %p\n", vme->vaddr);
-    printf ("  - vme->paddr: %p\n", vme->paddr);
-    printf ("  - vme->writable: %d\n", vme->writable);
-
-    printf ("   --------\n");
-    printf ("  - vme->ti.owner->name: %s\n", vme->ti.owner->name);
-    printf ("  - vme->ti.ofs: %d\n", vme->ti.ofs);
-    printf ("  - vme->ti.rbytes: %d\n", vme->ti.rbytes);
-    printf ("  - vme->ti.zbytes: %d\n", vme->ti.zbytes);
-
-    printf ("   --------\n");
-    
-    switch (vme->si.loc)
+    if (vme != NULL)
     {
-        case NOWHERE:   printf ("  - vme->si.loc: NOWHERE\n");    break;
-        case MEMORY:    printf ("  - vme->si.loc: MEMORY\n");     break;
-        case DISK:      printf ("  - vme->si.loc: DISK\n");       break;
-        case VALHALLA:  printf ("  - vme->si.loc: VALHALLA\n");   break;
+        printf ("  <vme info: %p>\n", vme);
+
+        printf ("  - vme->pf: %p\n", vme->pf);
+        printf ("  - vme->me: %p\n", vme->me);
+
+        printf ("   --------\n");
+        printf ("  - vme->page_type: %p\n", vme->page_type);
+
+        printf ("  - vme->vaddr: %p\n", vme->vaddr);
+        printf ("  - vme->paddr: %p\n", vme->paddr);
+        printf ("  - vme->writable: %d\n", vme->writable);
+
+        printf ("   --------\n");
+        printf ("  - vme->ti.owner->name: %s\n", vme->ti.owner->name);
+        printf ("  - vme->ti.ofs: %d\n", vme->ti.ofs);
+        printf ("  - vme->ti.rbytes: %d\n", vme->ti.rbytes);
+        printf ("  - vme->ti.zbytes: %d\n", vme->ti.zbytes);
+
+        printf ("   --------\n");
+        
+        switch (vme->si.loc)
+        {
+            case NOWHERE:   printf ("  - vme->si.loc: NOWHERE\n");    break;
+            case MEMORY:    printf ("  - vme->si.loc: MEMORY\n");     break;
+            case DISK:      printf ("  - vme->si.loc: DISK\n");       break;
+            case VALHALLA:  printf ("  - vme->si.loc: VALHALLA\n");   break;
+        }
+        printf ("  - vme->si.blk_idx: %d\n", vme->si.blk_idx);
+
+        printf ("   --------\n");
+        switch (vme->mi.loc)
+        {
+            case NOWHERE:   printf ("  - vme->mi.loc: NOWHERE\n");    break;
+            case MEMORY:    printf ("  - vme->mi.loc: MEMORY\n");     break;
+            case DISK:      printf ("  - vme->mi.loc: DISK\n");       break;
+            case VALHALLA:  printf ("  - vme->mi.loc: VALHALLA\n");   break;
+        }
+        printf ("  - vme->mi.fobj: %p\n", vme->mi.fobj);
+
+        printf ("  - vme->mi.ofs: %d\n", vme->mi.ofs);
+        printf ("  - vme->mi.rbytes: %d\n", vme->mi.rbytes);
+        printf ("  - vme->mi.zbytes: %d\n", vme->mi.zbytes);
+
+
+        if (vme->pf != NULL)
+        {
+            ;
+        }
     }
-    printf ("  - vme->si.blk_idx: %d\n", vme->si.blk_idx);
-
-    printf ("   --------\n");
-    switch (vme->mi.loc)
+    else
     {
-        case NOWHERE:   printf ("  - vme->mi.loc: NOWHERE\n");    break;
-        case MEMORY:    printf ("  - vme->mi.loc: MEMORY\n");     break;
-        case DISK:      printf ("  - vme->mi.loc: DISK\n");       break;
-        case VALHALLA:  printf ("  - vme->mi.loc: VALHALLA\n");   break;
-    }
-    printf ("  - vme->mi.fobj: %p\n", vme->mi.fobj);
-
-    printf ("  - vme->mi.ofs: %d\n", vme->mi.ofs);
-    printf ("  - vme->mi.rbytes: %d\n", vme->mi.rbytes);
-    printf ("  - vme->mi.zbytes: %d\n", vme->mi.zbytes);
-
-
-    if (vme->pf != NULL)
-    {
-        ;
+        printf ("  <vme info: %p>\n", vme);
+        printf ("  - Not valid.\n");
     }
 
 }
@@ -212,7 +226,7 @@ delete_vme (struct hash *vm, struct vm_entry *vme)
     if (vme->page_type != MMAP && vme->si.loc == DISK)
     {
         lock_acquire (&swap_lock);
-        bitmap_set_multiple (swap_device, vme->si.blk_idx, PGSIZE / BLOCK_SECTOR_SIZE, true);
+        bitmap_set_multiple (swap_bitmap, vme->si.blk_idx, PGSIZE / BLOCK_SECTOR_SIZE, true);
         lock_release (&swap_lock);
     }
     else

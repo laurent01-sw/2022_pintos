@@ -250,14 +250,22 @@ handle_mm_fault (
    if (vme == NULL)
    {
       if (__VALID_STACK__(f->esp, fault_addr)) // Check valid stack
-         handle_stack_fault (f, fault_addr);
+      {
+         void *baddr = pg_round_down (fault_addr);
+         while (baddr < PHYS_BASE)
+         {
+            if (find_vme (&(cur->vm), baddr) == NULL)
+               handle_stack_fault (f, baddr);
+            baddr += PGSIZE;
+         }
+      }
 
       else
          KILL_APP (f);
 
       return;
    }
-
+   
    // 3. Cases handling
    if (vme->writable == false && write)
       KILL_APP (f);
@@ -345,13 +353,9 @@ handle_stack_fault (struct intr_frame *f, void *fault_addr)
    struct vm_entry *vme;
    uint8_t *kpage;
 
-   vme = find_vme (&(t->vm), pg_round_down (fault_addr) + PGSIZE);
-
-   if (vme == NULL) // Make it continuous, for large stack
-      handle_stack_fault (f, fault_addr + PGSIZE);
    
    vme = malloc (sizeof (struct vm_entry));
-   // kpage = palloc_get_page (PAL_USER | PAL_ZERO);
+   
    kpage = alloc_pframe (PAL_USER | PAL_ZERO);
 
    struct text_info tinfo = {
@@ -412,7 +416,7 @@ handle_mmap_fault (void *fault_addr)
    struct vm_entry *vme;
    uint8_t *kpage;
 
-   // printf ("handle_mmap_fault\n");
+   // printf ("handle_mmap_fault: %p\n", fault_addr);
 
    fault_addr = pg_round_down (fault_addr);
 
