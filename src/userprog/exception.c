@@ -216,7 +216,7 @@ handle_mm_fault (
         bool user
     )
 {
-   
+   // printf ("handle_mm_fault: %p\n", fault_addr);
    struct vm_entry *vme;
    struct thread *cur = thread_current ();
    

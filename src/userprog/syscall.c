@@ -329,10 +329,11 @@ syscall_handler (struct intr_frame *f)
     if (!is_allowed_addr (f, *upage))
       f->eax = -1;
 
+    else if (pg_round_down (*upage) != *upage)
+      f->eax = -1;
+
     else if ((f->eax = register_mmap (*fd, *upage)) < 0)
-    {
       __exit (-1);
-    }
 
     break;
 
@@ -358,7 +359,10 @@ check_address(void * uva)
   uint32_t* pd;
   struct thread *cur = thread_current ();
   pd = cur->pagedir;
-  if(!pagedir_get_page(pd, uva))
+  // if(!pagedir_get_page(pd, uva))
+  //   return false;
+  /* Substitution */
+  if (find_vme (&(cur->vm), pg_round_down (uva)) == NULL)
     return false;
   return true;
 }

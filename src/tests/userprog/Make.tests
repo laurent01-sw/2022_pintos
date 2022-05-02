@@ -16,7 +16,7 @@ write-bad-fd exec-once exec-arg exec-bound exec-bound-2                 \
 exec-bound-3 exec-multiple exec-missing exec-bad-ptr wait-simple        \
 wait-twice wait-killed wait-bad-pid multi-recurse multi-child-fd        \
 rox-simple rox-child rox-multichild bad-read bad-write bad-read2        \
-bad-write2 bad-jump bad-jump2 sig-simple)
+bad-write2 bad-jump bad-jump2)
 
 tests/userprog_PROGS = $(tests/userprog_TESTS) $(addprefix \
 tests/userprog/,child-simple child-args child-bad child-close child-rox child-sig)
@@ -100,7 +100,6 @@ tests/userprog/rox-simple_SRC = tests/userprog/rox-simple.c tests/main.c
 tests/userprog/rox-child_SRC = tests/userprog/rox-child.c tests/main.c
 tests/userprog/rox-multichild_SRC = tests/userprog/rox-multichild.c	\
 tests/main.c
-tests/userprog/sig-simple_SRC = tests/userprog/sig-simple.c tests/main.c
 
 tests/userprog/child-simple_SRC = tests/userprog/child-simple.c
 tests/userprog/child-args_SRC = tests/userprog/args.c
