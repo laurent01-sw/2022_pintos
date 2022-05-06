@@ -163,4 +163,6 @@ int thread_get_load_avg (void);
 
 struct thread *thread_wait(tid_t child_tid);
 
+bool is_thread (struct thread *) UNUSED;
+
 #endif /* threads/thread.h */

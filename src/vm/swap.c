@@ -127,7 +127,7 @@ swap_out ()
 
 bool
 swap_out_normal ()
-{
+{   
     int i = 0;
     void *ptr = NULL;
 
@@ -143,13 +143,18 @@ swap_out_normal ()
     // Selection among lru_list, what to evict
     struct list_elem *pframe_elem = list_pop_back (&lru_list);
     struct pframe *pf_ = list_entry (pframe_elem, struct pframe, l_elem);
+    bool alive = is_thread (pf_->vme->ti.owner);
 
-    while (pf_->pinned || pf_->vme->si.loc == VALHALLA)
+    while (pf_->pinned || pf_->vme->si.loc == VALHALLA || !alive) // Continue
     {
-        list_push_front (
-            &(lru_list), &(pf_->l_elem)
-        );
-        pf_ = list_pop_back (&lru_list);
+        alive = is_thread (pf_->vme->ti.owner);
+
+        if (alive)
+            list_push_front (
+                &(lru_list), &(pf_->l_elem)
+            );
+
+        pf_ = list_entry (list_pop_back (&lru_list), struct pframe, l_elem);
     } // Search for unpinned, and physically allocated page.
 
     lru_update ();
@@ -201,8 +206,17 @@ swap_out_normal ()
         lock_release (&swap_lock);
     }
     
-    pagedir_clear_page (thread_current ()->pagedir, pf_->vme->vaddr);   // Unregister
+    // debug_vm_entry (pf_->vme);
+
+    // printf (
+    //     "is_thread: %d\n",
+    //     is_thread (pf_->vme->ti.owner)
+    // );
+
+    pagedir_clear_page (pf_->vme->ti.owner->pagedir, pf_->vme->vaddr);   // Unregister
     palloc_free_page (pf_->vme->paddr);                                 // Free the target !!!!
+
+    //debug_vm_entry (pf_->vme);
 
     pf_->vme->paddr = NULL;
     pf_->cnt = 0;
