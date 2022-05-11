@@ -1,0 +1,261 @@
++---------------------------+
+|         CSE 311           |
+| PROJECT 3: VIRTUAL MEMORY |
+|      DESIGN DOCUMENT      |
++---------------------------+
+
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+Seungwon Yoo    <ysw1021@gmail.com>
+Sukjoon Oh      <sjoon-oa@protonmail.ch>
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+      PAGE TABLE MANAGEMENT
+      =====================
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+struct spage
+  {
+    // In total, READ_BYTES + ZERO_BYTES bytes of virtual memory are LAZILY initialized
+    struct hash_elem hash_elem; /* Hash table element. */
+    char *file; /* Backing store for file or elf */
+    struct file* mm_file;
+    uint32_t fd;
+    uint8_t *vpn; /* Virtual Page Number */
+    off_t ofs;  /* Load Point*/
+    struct frame *frame; /* Matched Frame */
+    struct swap_slot *swap_slot;
+    uint32_t page_read_bytes; /* READ_BYTES bytes at UPAGE must be read from FILE starting at offset OFS. */
+    uint32_t page_zero_bytes; /* ZERO_BYTES bytes at UPAGE + READ_BYTES must be zeroed. */
+    int32_t information;        /* Indicate additional information */
+    bool writable; /* WRITE PERMISSION */
+    bool on_memory;
+    uint32_t mapid;
+    int file_size;
+    int file_left;
+    bool swap_out;
+  };
+
+  struct frame
+  {
+    struct hash_elem hash_elem; /* Hash table element. */
+    void *c_page;               /* Corresponding page. */
+    struct spage *spage; /* Corresponding Virtual Page */
+    void *b_addr;            /* block address */
+    uint32_t frame_number;  /* frame number */
+    tid_t thread_id; /* thread_id */
+    int32_t information;        /* Indicate additional information */
+    bool dirty;
+    bool swap_out;
+  };
+
+  struct swap_slot
+  {
+    struct hash_elem hash_elem; /* Hash table element. */
+    struct spage *spage;               /* Corresponding page. */
+    uint32_t idx;    /* Index of block device */
+    uint32_t valid_size;
+    tid_t thread_id;    /*Need to disallocate when corresponding process terminate */
+  };
+
+I add annotation at each member when necessary
+
+---- ALGORITHMS ----
+
+>> A2: In a few paragraphs, describe your code for locating the frame,
+>> if any, that contains the data of a given page.
+I maintain hash table to manage all the frame which have page from user pool
+
+>> A3: How does your code coordinate accessed and dirty bits between
+>> kernel and user virtual addresses that alias a single frame, or
+>> alternatively how do you avoid the issue?
+
+I double check both KPage and UPage by calling twice pagedir_is_dirty().
+
+---- SYNCHRONIZATION ----
+
+>> A4: When two user processes both need a new frame at the same time,
+>> how are races avoided?
+
+We use lock when new frame is allocated. I use get_free_frame() which is made by myself rather directly calling palloc_get_page()
+
+---- RATIONALE ----
+
+>> A5: Why did you choose the data structure(s) that you did for
+>> representing virtual-to-physical mappings?
+
+spage(supplemental page table) represents virtual memory and each process has it as you know virtaul address is independent for each process. frame table is maintained through whole system, thus initailized at init.c
+
+           PAGING TO AND FROM DISK
+           =======================
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+struct swap_slot
+  {
+    struct hash_elem hash_elem; /* Hash table element. */
+    struct spage *spage;               /* Corresponding page. */
+    uint32_t idx;    /* Index of block device */
+    uint32_t valid_size;
+    tid_t thread_id;    /*Need to disallocate when corresponding process terminate */
+  };
+
+I add annotation when it is necessary
+
+---- ALGORITHMS ----
+
+>> B2: When a frame is required but none is free, some frame must be
+>> evicted.  Describe your code for choosing a frame to evict.
+Actually I implement second chance algorithm but this won't work. So I just choose evict frame sequentially at the hash table.
+
+>> B3: When a process P obtains a frame that was previously used by a
+>> process Q, how do you adjust the page table (and any other data
+>> structures) to reflect the frame Q no longer has?
+pagedir_set_page comes handy and this problem is resolved easily. And I limit as the process choose evict frame from itself's frame.
+
+>> B4: Explain your heuristic for deciding whether a page fault for an
+>> invalid virtual address should cause the stack to be extended into
+>> the page that faulted.
+
+I return true when fault_addr is smaller than esp or there are less than 4KB gap. And to limit the stack size of 8MB, use condition that PHYS_BASE - page_number of stack pointer is smaller than Page Size
+
+---- SYNCHRONIZATION ----
+
+>> B5: Explain the basics of your VM synchronization design.  In
+>> particular, explain how it prevents deadlock.  (Refer to the
+>> textbook for an explanation of the necessary conditions for
+>> deadlock.)
+
+There are 3 locks, frame lock, cleaning lock, load lock. Frame lock is used when frame is allocated so race condition when multiple process requires new frame can be prevented. Cleaning lock prevent race condition that multiple process tries to access frame table. Load lock is used to prevent race condition which can happen when setup page. (install_page function is used in my case referring process.c)
+
+>> B6: A page fault in process P can cause another process Q's frame
+>> to be evicted.  How do you ensure that Q cannot access or modify
+>> the page during the eviction process?  How do you avoid a race
+>> between P evicting Q's frame and Q faulting the page back in?
+
+Since I only select eviction frame in its process’s virtual memory table (spage table) this kind of situation never happens.
+
+>> B7: Suppose a page fault in process P causes a page to be read from
+>> the file system or swap.  How do you ensure that a second process Q
+>> cannot interfere by e.g. attempting to evict the frame while it is
+>> still being read in?
+
+Block device is internally synchronized so we don't have to worry about that situation. First situation can be handled by introducing of lock variable which corresponds to page pinning.
+
+>> B8: Explain how you handle access to paged-out pages that occur
+>> during system calls.  Do you use page faults to bring in pages (as
+>> in user programs), or do you have a mechanism for "locking" frames
+>> into physical memory, or do you use some other design?  How do you
+>> gracefully handle attempted accesses to invalid virtual addresses?
+
+I avoid page fault during system call by investigating user address. I first pin all the pages which is relevant.
+
+---- RATIONALE ----
+
+>> B9: A single lock for the whole VM system would make
+>> synchronization easy, but limit parallelism.  On the other hand,
+>> using many locks complicates synchronization and raises the
+>> possibility for deadlock but allows for high parallelism.  Explain
+>> where your design falls along this continuum and why you chose to
+>> design it this way.
+
+The most recent bug was about hash table. When I tries to access swap table or frame table and perform operation hash_delete or hash_insert, all other hash iterator which works on swap or frame table become invalidated and it cause synchronization problem. So I use lock for hash table. And basically I should use lock when setup page.
+       MEMORY MAPPED FILES
+       ===================
+
+---- DATA STRUCTURES ----
+
+>> C1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+/* Supplemental Page Table */
+struct spage
+  {
+    // In total, READ_BYTES + ZERO_BYTES bytes of virtual memory are LAZILY initialized
+    struct hash_elem hash_elem; /* Hash table element. */
+    char *file; /* Backing store for file or elf */
+    struct file* mm_file;
+    uint32_t fd;
+    uint8_t *vpn; /* Virtual Page Number */
+    off_t ofs;  /* Load Point*/
+    struct frame *frame; /* Matched Frame */
+    struct swap_slot *swap_slot;
+    uint32_t page_read_bytes; /* READ_BYTES bytes at UPAGE must be read from FILE starting at offset OFS. */
+    uint32_t page_zero_bytes; /* ZERO_BYTES bytes at UPAGE + READ_BYTES must be zeroed. */
+    int32_t information;        /* Indicate additional information */
+    bool writable; /* WRITE PERMISSION */
+    bool on_memory;
+    uint32_t mapid;
+    int file_size;
+    int file_left;
+    bool swap_out;
+  };
+Basically spage has all information which is needed for mmap or unmmap system call.
+
+---- ALGORITHMS ----
+
+>> C2: Describe how memory mapped files integrate into your virtual
+>> memory subsystem.  Explain how the page fault and eviction
+>> processes differ between swap pages and other pages.
+
+First, we created a function that handles SYS_MMAP when called. However, this only sets a value for the spage structure, but does not actually allocate physical memory. Later, when the page fault occurred, they checked the value of the page and allocated the physical memory.
+
+>> C3: Explain how you determine whether a new file mapping overlaps
+>> any existing segment.
+
+Because filesys_open() is called only once per file in the system call, the file structure will have the same value. Therefore, we can check the file address value inside the spage structure to see if it is an overlapped mapping. However, we also checked the file offset since several spages can point to the same file depending on the offset.
+
+---- RATIONALE ----
+
+>> C4: Mappings created with "mmap" have similar semantics to those of
+>> data demand-paged from executables, except that "mmap" mappings are
+>> written back to their original files, not to swap.  This implies
+>> that much of their implementation can be shared.  Explain why your
+>> implementation either does or does not share much of the code for
+>> the two situations.
+
+At first, we thought that the two functions were different. However, after implementing them all, we found that there were many similarities, and we divided the mmap function so that they could share the same parts as much as possible. Some of them were handled by a system call, and parts that could be shared were handled by an exception. This allowed us to reduce code duplication as much as possible.
+
+SURVEY QUESTIONS
+================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students, either for future quarters or the remaining projects?
+
+>> Any other comments?
