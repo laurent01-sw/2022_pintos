@@ -323,6 +323,7 @@ handle_load_elf (void *fault_addr)
 
    if (vme->page_type == HUGE_PAGE) {
 	kpage = palloc_get_multiple(PAL_USER | PAL_ZERO, 2048);
+	// printf("kpage : %p\n",kpage);
 	//printf("alloc kpage : %p\n",kpage);
 	k1page = hpg_round_down(kpage + HPGSIZE);
 	//printf("rounded kpage : %p\n",k1page);
