@@ -312,8 +312,6 @@ alloc_pframe (enum palloc_flags flags)
     return kpage;
 }
 
-
-
 bool
 access_less (const struct list_elem *a_, const struct list_elem *b_,
             void *aux UNUSED) 

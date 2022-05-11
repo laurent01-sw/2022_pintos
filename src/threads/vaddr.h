@@ -19,6 +19,10 @@
 #define PGBITS  12                         /* Number of offset bits. */
 #define PGSIZE  (1 << PGBITS)              /* Bytes in a page. */
 #define PGMASK  BITMASK(PGSHIFT, PGBITS)   /* Page offset bits (0:12). */
+#define HPGBITS 22                         /* Number of offset bits
+                                              for huge page. */
+#define HPGSIZE (1 << HPGBITS)             /* Bytes in a huge page (4MB). */
+#define HPGMASK BITMASK(0, HPGBITS)        /* Huge page offset bits (0:22). */
 
 /* Offset within a page. */
 static inline unsigned pg_ofs (const void *va) {
@@ -39,7 +43,14 @@ static inline void *pg_round_up (const void *va) {
 static inline void *pg_round_down (const void *va) {
   return (void *) ((uintptr_t) va & ~PGMASK);
 }
-
+
+static inline void *hpg_round_up (const void *va) {
+  return (void *) (((uintptr_t) va + HPGSIZE - 1) & ~HPGMASK);
+}
+
+static inline void *hpg_round_down (const void *va) {
+  return (void *) ((uintptr_t) va & ~HPGMASK);
+}
 /* Base address of the 1:1 physical-to-virtual mapping.  Physical
    memory is mapped starting at this virtual address.  Thus,
    physical address 0 is accessible at PHYS_BASE, physical

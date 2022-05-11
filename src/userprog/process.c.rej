@@ -1,0 +1,18 @@
+--- src/userprog/process.c
++++ src/userprog/process.c
+@@ -395,6 +395,15 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
+          and zero the final PAGE_ZERO_BYTES bytes. */
+       size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
+       size_t page_zero_bytes = PGSIZE - page_read_bytes;
++      size_t hpage_read_bytes = read_bytes < HPGSIZE ? read_bytes : HPGSIZE;
++      size_t hpage_zero_bytes = HPGSIZE - hpage_read_bytes;
++
++      if (read_bytes + zero_bytes >= HPGSIZE && \
++         ((uint32_t) pg_round_down(upage) & HPGMASK) == 0) {
++        /* Huge Page. */
++      } else {
++        /* 4KB Page. */
++      }
+ 
+       /* Get a page of memory. */
+       uint8_t *kpage = palloc_get_page (PAL_USER);

@@ -11,5 +11,6 @@ void process_activate (void);
 // Added.
 
 bool install_page (void *upage, void *kpage, bool writable);
+bool install_hpage (void *upage, void *kpage, bool writable);
 
 #endif /* userprog/process.h */

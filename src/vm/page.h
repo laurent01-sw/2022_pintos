@@ -4,7 +4,8 @@ enum PAGE_TYPE
     ANONYMOUS   = 0x02, 
     FILE_BACKED = 0x04,
     ELF         = 0x08,
-    MMAP        = 0xf0
+    MMAP        = 0x10,
+    HUGE_PAGE   = 0x20
 };
 
 
@@ -77,6 +78,7 @@ struct vm_entry
     uint8_t *vaddr;             // upage, virtual address
     uint8_t *paddr;             // Physical Address
     bool writable;              // Write permission
+    bool hugepage;
     
     // For demand paging
     struct text_info ti;

@@ -6,9 +6,12 @@
 #include "tests/lib.h"
 #include "tests/main.h"
 
-#define SIZE (2 * 1024 * 1024)
+//#define SIZE (2 * 1024 * 1024)
+//#define SIZE (4 * 1024 * 1024)    // 4MB buffer.
+#define SIZE (8 * 1024 * 1024)  //  8MB buffer.
+//#define SIZE (16 * 1024 * 1024) // 16MB buffer.
 
-static char buf[SIZE];
+static char buf[SIZE] = {0};
 
 void
 test_main (void)

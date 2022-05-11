@@ -239,7 +239,7 @@ handle_mm_fault (
       vme->pf->pinned = false;
       return;
    }
-
+   
 
 #define __VALID_STACK__(ESP, FA) \
    (ESP <= FA || FA == ESP - 4 || FA == ESP - 32) && \
@@ -273,7 +273,7 @@ handle_mm_fault (
    if (vme->page_type == MMAP)
       handle_mmap_fault (fault_addr);
 
-   else if (vme->page_type == ELF)
+   else if (vme->page_type == ELF || vme->page_type == HUGE_PAGE)
       handle_load_elf (fault_addr);
 
    else
@@ -313,13 +313,46 @@ handle_load_elf (void *fault_addr)
 {
    struct thread *t = thread_current ();
    struct vm_entry *vme;
-   uint8_t *kpage;
+   uint8_t *kpage, *k1page, *k2page;
 
    fault_addr = pg_round_down (fault_addr);
 
    vme = find_vme (&(t->vm), fault_addr);
+   //if (fault_addr == 0x8400000)
+   //	   printf("%s, type : %x\n",__func__,vme->page_type);
+
+   if (vme->page_type == HUGE_PAGE) {
+	kpage = palloc_get_multiple(PAL_USER | PAL_ZERO, 2048);
+	//printf("alloc kpage : %p\n",kpage);
+	k1page = hpg_round_down(kpage + HPGSIZE);
+	//printf("rounded kpage : %p\n",k1page);
+	palloc_free_multiple(kpage, (k1page - kpage) / PGSIZE );
+	palloc_free_multiple(k1page + HPGSIZE, (kpage + HPGSIZE - k1page) / PGSIZE);
+
+   	ASSERT (vme != NULL);
+   	ASSERT (kpage != NULL);
+
+   	file_seek (vme->ti.exe_file, vme->ti.ofs);
+
+   	if (file_read (vme->ti.exe_file, kpage, vme->ti.rbytes) != (int) vme->ti.rbytes)
+   	{
+   	   palloc_free_page (kpage);
+   	   ASSERT (false);
+   	}
+
+   	vme->paddr = kpage;
+   	vme->si.loc = MEMORY;
    
-   kpage =  alloc_pframe (PAL_USER);
+	if (!install_hpage (vme->vaddr, k1page, vme->writable)) 
+   	{
+   	   palloc_free_multiple (k1page, 1024);
+   	   ASSERT (false);
+   	}
+   	
+	return;
+   }
+   
+   kpage = alloc_pframe (PAL_USER);
    
    ASSERT (vme != NULL);
    ASSERT (kpage != NULL);

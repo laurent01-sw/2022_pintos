@@ -123,6 +123,10 @@ start:
 	movl $0xf000, %eax
 	movl %eax, %cr3
 
+  movl %cr4, %eax
+  orl  $0x0010, %eax
+  movl %eax, %cr4
+
 #### Switch to protected mode.
 
 # First, disable interrupts.  We won't set up the IDT until we get

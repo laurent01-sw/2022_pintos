@@ -14,7 +14,7 @@ BEGIN { my $self = $0; $self =~ s%/+[^/]*$%%; require "$self/Pintos.pm"; }
 our ($start_time) = time ();
 our ($sim);			# Simulator: bochs, qemu, or player.
 our ($debug) = "none";		# Debugger: none, monitor, or gdb.
-our ($mem) = 4;			# Physical RAM in MB.
+our ($mem) = 128;			# Physical RAM in MB.
 our ($serial) = 1;		# Use serial port for input and output?
 our ($vga);			# VGA output: window, terminal, or none.
 our ($jitter);			# Seed for random timer interrupts, if set.

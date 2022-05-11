@@ -34,7 +34,7 @@ struct pool
   };
 
 /* Two pools: one for kernel data, one for user pages. */
-static struct pool kernel_pool, user_pool;
+static struct pool kernel_pool, user_pool, huser_pool;
 
 static void init_pool (struct pool *, void *base, size_t page_cnt,
                        const char *name);
@@ -49,7 +49,7 @@ palloc_init (size_t user_page_limit)
   uint8_t *free_start = ptov (1024 * 1024);
   uint8_t *free_end = ptov (init_ram_pages * PGSIZE);
   size_t free_pages = (free_end - free_start) / PGSIZE;
-  size_t user_pages = free_pages / 2;
+  size_t user_pages = free_pages / 4;
   size_t kernel_pages;
   if (user_pages > user_page_limit)
     user_pages = user_page_limit;
@@ -59,6 +59,8 @@ palloc_init (size_t user_page_limit)
   init_pool (&kernel_pool, free_start, kernel_pages, "kernel pool");
   init_pool (&user_pool, free_start + kernel_pages * PGSIZE,
              user_pages, "user pool");
+  init_pool (&huser_pool, free_start + kernel_pages * PGSIZE + user_pages * PGSIZE,
+             user_pages * PGSIZE / HPGSIZE, "huser pool");
 }
 
 /* Obtains and returns a group of PAGE_CNT contiguous free pages.
@@ -157,6 +159,9 @@ init_pool (struct pool *p, void *base, size_t page_cnt, const char *name)
      Calculate the space needed for the bitmap
      and subtract it from the pool's size. */
   size_t bm_pages = DIV_ROUND_UP (bitmap_buf_size (page_cnt), PGSIZE);
+  if (!strcmp(name,"huser pool")) {
+	  bm_pages = DIV_ROUND_UP (bitmap_buf_size(page_cnt), HPGSIZE);
+  }
   if (bm_pages > page_cnt)
     PANIC ("Not enough memory in %s for bitmap.", name);
   page_cnt -= bm_pages;

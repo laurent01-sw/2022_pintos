@@ -66,6 +66,8 @@ lookup_page (uint32_t *pd, const void *vaddr, bool create)
   /* Check for a page table for VADDR.
      If one is missing, create one if requested. */
   pde = pd + pd_no (vaddr);
+  if (pde == 0xc011a084)
+  	printf("(%s) pde : %p, *pde : %p\n",__func__, pde, *pde);
   if (*pde == 0) 
     {
       if (create)
@@ -75,7 +77,7 @@ lookup_page (uint32_t *pd, const void *vaddr, bool create)
             return NULL; 
       
           *pde = pde_create (pt);
-        }
+          }
       else
         return NULL;
     }
@@ -83,6 +85,33 @@ lookup_page (uint32_t *pd, const void *vaddr, bool create)
   /* Return the page table entry. */
   pt = pde_get_pt (*pde);
   return &pt[pt_no (vaddr)];
+}
+
+static uint32_t *
+lookup_hpage (uint32_t *pd, const void *vaddr, const void *kpage, bool create)
+{
+  uint32_t *pt, *pde;
+
+  ASSERT (pd != NULL);
+
+  /* Shouldn't create new kernel virtual mappings. */
+  ASSERT (!create || is_user_vaddr (vaddr));
+
+  /* Check for a page table for VADDR.
+     If one is missing, create one if requested. */
+  pde = pd + pd_no (vaddr);
+  if (*pde == 0) 
+    {
+      if (create)
+	{
+	  *pde = hpde_create (kpage);
+	}
+      else
+	return NULL;
+    }
+
+  /* Return the page table entry. */
+  return *pde;
 }
 
 /* Adds a mapping in page directory PD from user virtual page
@@ -118,6 +147,20 @@ pagedir_set_page (uint32_t *pd, void *upage, void *kpage, bool writable)
     return false;
 }
 
+bool
+pagedir_set_hpage (uint32_t *pd, void *upage, void *kpage, bool writable)
+{
+  uint32_t *pde;
+
+  pde = lookup_hpage (pd, upage, kpage, true);
+
+  if (pde != NULL) 
+      return true;
+  else
+    return false;
+}
+
+
 /* Looks up the physical address that corresponds to user virtual
    address UADDR in PD.  Returns the kernel virtual address
    corresponding to that physical address, or a null pointer if
@@ -132,6 +175,18 @@ pagedir_get_page (uint32_t *pd, const void *uaddr)
   pte = lookup_page (pd, uaddr, false);
   if (pte != NULL && (*pte & PTE_P) != 0)
     return pte_get_page (*pte) + pg_ofs (uaddr);
+  else
+    return NULL;
+}
+
+void *
+pagedir_get_hpage (uint32_t *pd, const void *uaddr) 
+{
+  uint32_t *pde;
+
+  pde = lookup_hpage (pd, uaddr, NULL, false);
+  if (pde != NULL && (*pde & PTE_P) != 0)
+    return (unsigned) ((uintptr_t)pde & HPGMASK);
   else
     return NULL;
 }
