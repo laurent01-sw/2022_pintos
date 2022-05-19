@@ -2,15 +2,23 @@
 #include <debug.h>
 #include <stdio.h>
 #include <string.h>
+#include <list.h>
 #include "filesys/file.h"
 #include "filesys/free-map.h"
 #include "filesys/inode.h"
 #include "filesys/directory.h"
+#include "threads/palloc.h"
+#include "threads/malloc.h"
+#include "threads/synch.h"
 
 /* Partition that contains the file system. */
 struct block *fs_device;
 
+extern struct list bh_list;
+extern struct lock bh_list_lock;
+
 static void do_format (void);
+static void bcache_init (void);
 
 /* Initializes the file system module.
    If FORMAT is true, reformats the file system. */
@@ -23,6 +31,9 @@ filesys_init (bool format)
 
   inode_init ();
   free_map_init ();
+
+  /* Initialize Buffer Cache Infrastructure */
+  bcache_init ();
 
   if (format) 
     do_format ();
@@ -73,7 +84,6 @@ filesys_open (const char *name)
     dir_lookup (dir, name, &inode);
   dir_close (dir);
 
-  // printf("(%s) File : %p\n",__func__,inode);
   return file_open (inode);
 }
 
@@ -101,4 +111,34 @@ do_format (void)
     PANIC ("root directory creation failed");
   free_map_close ();
   printf ("done.\n");
+}
+
+static void 
+bcache_init (void)
+{
+  int i;
+  struct buffer_head *b_head;
+  char *b_page;
+
+  list_init (&bh_list); 
+  lock_init (&bh_list_lock);
+
+  b_page = NULL;
+
+  for (i = 0; i < BH_ENTRY; i++) 
+    {
+      b_head = malloc (sizeof *b_head);
+      memset (b_head, 0, sizeof *b_head);
+
+      if (i % 4 == 0) /* Alloc Page for each 4th buffer head */
+	{
+	  b_page = palloc_get_page (PAL_ZERO); 
+	}
+      b_head->b_magic = BH_MAGIC;
+      b_head->b_page = (uint32_t *) b_page;
+      b_head->b_start_page = b_page +  BLOCK_SECTOR_SIZE * (i % 4);
+      b_head->pos = BLOCK_SECTOR_SIZE * (i % 4);  
+
+      list_push_back (&bh_list, &b_head->elem);
+    } 
 }

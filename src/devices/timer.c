@@ -7,6 +7,7 @@
 #include "threads/interrupt.h"
 #include "threads/synch.h"
 #include "threads/thread.h"
+#include "filesys/inode.h"
   
 /* See [8254] for hardware details of the 8254 timer chip. */
 
@@ -172,6 +173,8 @@ timer_interrupt (struct intr_frame *args UNUSED)
 {
   ticks++;
   thread_tick ();
+  if (ticks % 2000 == 0)
+    pdflush ();
 }
 
 /* Returns true if LOOPS iterations waits for more than one timer
