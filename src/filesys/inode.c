@@ -11,15 +11,20 @@
 
 /* Identifies an inode. */
 #define INODE_MAGIC 0x494e4f44
+#define DIRECT_BLOCK_ENTRIES 124
+#define INDIRECT_BLOCK_ENTRIES DIRECT_BLOCK_ENTRIES + 128
+#define DINDIRECT_BLOCK_ENTRIES INDIRECT_BLOCK_ENTRIES + 128 * 128
 
 /* On-disk inode.
    Must be exactly BLOCK_SECTOR_SIZE bytes long. */
 struct inode_disk
   {
-    block_sector_t start;               /* First data sector. */
     off_t length;                       /* File size in bytes. */
     unsigned magic;                     /* Magic number. */
-    uint32_t unused[125];               /* Not used. */
+    /* Extensible File Support */
+    block_sector_t direct_map_table[DIRECT_BLOCK_ENTRIES];
+    block_sector_t indirect_block_sec;
+    block_sector_t double_indirect_block_sec;
   };
 
 /* Returns the number of sectors to allocate for an inode SIZE
@@ -53,11 +58,54 @@ static int active_b_count; /* Count How many buffer cache entry is used curretly
 static block_sector_t
 byte_to_sector (const struct inode *inode, off_t pos) 
 {
+  struct buffer_head *b_head = NULL;
+  block_sector_t sector_pos;
+  uint32_t *page_pos = NULL;
+
   ASSERT (inode != NULL);
+
+  sector_pos = pos / BLOCK_SECTOR_SIZE;
+  
   if (pos < inode->data.length)
-    return inode->data.start + pos / BLOCK_SECTOR_SIZE;
+    {
+      if (sector_pos < DIRECT_BLOCK_ENTRIES)
+	// Read from Direct Pointer 
+        {
+	   return inode->data.direct_map_table[sector_pos];
+	}
+      else if (sector_pos < INDIRECT_BLOCK_ENTRIES)
+	// Read from Single Indirect Pointer 
+	{
+	  // Read Indirect Pointer Block 
+	  sector_pos -= DIRECT_BLOCK_ENTRIES;
+	  b_head = find_bcache_entry (inode->data.indirect_block_sec);	
+	  page_pos = (uint32_t *) b_head->b_start_page;
+	  page_pos = page_pos + sector_pos;
+	  return *page_pos;
+	}
+      else if (sector_pos < DINDIRECT_BLOCK_ENTRIES)
+	// Read from Double Indirect Pointer 
+	{
+	  // Read Double Indirect Pointer Block
+	  sector_pos -= INDIRECT_BLOCK_ENTRIES;
+	  b_head = find_bcache_entry (inode->data.double_indirect_block_sec);
+	  page_pos = (uint32_t *) b_head->b_start_page;
+	  page_pos = page_pos + (sector_pos / 128);
+	  // Read Indirect Pointer Block
+	  b_head = find_bcache_entry (*page_pos);
+	  page_pos = (uint32_t *) b_head->b_start_page;
+	  page_pos = page_pos + (sector_pos % 128);
+	  return *page_pos;
+	}
+      else
+        {
+	  ASSERT(false);
+	}
+      // return inode->data.start + pos / BLOCK_SECTOR_SIZE;
+    }
   else
     return -1;
+  
 }
 
 /* List of open inodes, so that opening a single inode twice
@@ -76,11 +124,16 @@ inode_init (void)
    device.
    Returns true if successful.
    Returns false if memory or disk allocation fails. */
+/* Extensible File Support */
 bool
 inode_create (block_sector_t sector, off_t length)
 {
   struct inode_disk *disk_inode = NULL;
-  bool success = false;
+  bool i_pblock = true, di_pblock = true, d_block = true, i_block = true, di_block = true;
+  uint32_t *page_pos, *ipage_pos, p_count, f_count, s_count = 0, i, j;
+  block_sector_t sector_len, d_sector_num;
+  struct buffer_head *b_head, *ib_head;
+  static char zeros [BLOCK_SECTOR_SIZE];
 
   ASSERT (length >= 0);
 
@@ -94,22 +147,169 @@ inode_create (block_sector_t sector, off_t length)
       size_t sectors = bytes_to_sectors (length);
       disk_inode->length = length;
       disk_inode->magic = INODE_MAGIC;
-      if (free_map_allocate (sectors, &disk_inode->start)) 
+      
+      sector_len = length / BLOCK_SECTOR_SIZE;
+      
+      /* Panic if Out of Maximum File Size*/
+      ASSERT (sector_len <= DINDIRECT_BLOCK_ENTRIES)
+
+      /* initialize pointer block */
+      if (sector_len > DIRECT_BLOCK_ENTRIES)
         {
-          block_write (fs_device, sector, disk_inode);
-          if (sectors > 0) 
+	  if (!free_map_allocate (1, &disk_inode->indirect_block_sec))
+	    goto done;
+	  else
+	    block_write (fs_device, disk_inode->indirect_block_sec, zeros);
+	}
+      if (sector_len > INDIRECT_BLOCK_ENTRIES)
+        {
+	  if (!free_map_allocate (1, &disk_inode->double_indirect_block_sec))
+	    {
+	      i_pblock = false;
+	      goto done; /* Clean inode indirect Block */
+	    }
+	  else
+	    block_write(fs_device, disk_inode->double_indirect_block_sec, zeros);
+
+	  d_sector_num = sector_len - INDIRECT_BLOCK_ENTRIES;
+	  b_head = find_bcache_entry (disk_inode->double_indirect_block_sec);
+	  page_pos = (uint32_t *) b_head->b_start_page;
+	  for (p_count = 0; p_count < DIV_ROUND_UP(d_sector_num, 128); p_count++)
+	    {
+	      free_map_allocate (1, page_pos + p_count);
+	      block_write (fs_device, *(page_pos + p_count), zeros);
+	    }
+	  b_head->b_state |= (1UL << BH_Dirty);
+	  if (p_count != DIV_ROUND_UP(d_sector_num, 128)) 
+	    /* Fail to allocate whole dindirect block set */
+	    {
+	      di_pblock = i_pblock = false;
+	      goto done;
+	    }
+	}
+
+      b_head = ib_head = NULL;
+      while (sectors > 0)
+	{
+          if (s_count < DIRECT_BLOCK_ENTRIES)
+	      // Store to Direct Pointer 
             {
-              static char zeros[BLOCK_SECTOR_SIZE];
-              size_t i;
-              
-              for (i = 0; i < sectors; i++) 
-                block_write (fs_device, disk_inode->start + i, zeros);
-            }
-          success = true; 
-        } 
+	      if (!free_map_allocate (1, &disk_inode->direct_map_table[s_count]))
+	        {
+		  d_block = di_pblock = i_pblock = false;
+	          break;
+		}
+	      else
+	        block_write(fs_device, disk_inode->direct_map_table[s_count], zeros);
+	    }
+          else if (s_count < INDIRECT_BLOCK_ENTRIES)
+	      // Store to Single Indirect Pointer 
+	    { 
+	      // Read Indirect Pointer Block 
+	      if (!b_head)
+	      { 
+	        b_head = find_bcache_entry (disk_inode->indirect_block_sec);	
+	        page_pos = (uint32_t *) b_head->b_start_page;
+	      }
+
+	      if (!free_map_allocate (1, page_pos + (s_count - DIRECT_BLOCK_ENTRIES)))
+	        {
+		  i_block = d_block = di_pblock = i_pblock = false;
+	          break;
+		}
+	      else
+	        block_write(fs_device, *(page_pos + s_count - DIRECT_BLOCK_ENTRIES), zeros);
+
+	      if (s_count == INDIRECT_BLOCK_ENTRIES - 1)
+	        b_head = NULL;
+	      
+	      b_head->b_state |= (1UL << BH_Dirty);
+	    }
+          else if (s_count < DINDIRECT_BLOCK_ENTRIES)
+	      // Read from Double Indirect Pointer 
+	    {
+	      // Read Double Indirect Pointer Block
+	      if (!b_head)
+	        {
+		  b_head = find_bcache_entry (disk_inode->double_indirect_block_sec);
+	          page_pos = (uint32_t *) b_head->b_start_page;
+		}
+	      // Read Indirect Pointer Block
+	      if (!ib_head)
+	        {
+		  ib_head = find_bcache_entry (*(page_pos 
+					  + (s_count - INDIRECT_BLOCK_ENTRIES)/ 128));
+	          ipage_pos = (uint32_t *) ib_head->b_start_page;
+	      	  ipage_pos = ipage_pos + (s_count - INDIRECT_BLOCK_ENTRIES) % 128;
+		}
+	      ib_head = s_count - INDIRECT_BLOCK_ENTRIES % 128 == 127 ? NULL : ib_head;
+	      
+	      if (!free_map_allocate (1, ipage_pos + (s_count - DIRECT_BLOCK_ENTRIES)))
+	        {
+		  di_block = i_block = d_block = di_pblock = i_pblock = false;
+	          break;
+		}
+	      else
+	        block_write(fs_device, *(ipage_pos + s_count - DIRECT_BLOCK_ENTRIES), zeros);
+	  
+	      ib_head->b_state |= (1UL << BH_Dirty);
+	    }
+          else
+            {
+	      ASSERT(false);
+	    }
+	  sectors--; s_count++;
+	}
+done:
+      if (!di_block) /* Clean Data Block Pointed by Dindirect Pointer Block */
+	{
+	  b_head = find_bcache_entry (disk_inode->double_indirect_block_sec);
+	  page_pos = (uint32_t *) b_head->b_start_page;
+	  for (i = 0; *(page_pos + i) != 0; j++)
+	    {
+	      ib_head = find_bcache_entry (*(page_pos + i));
+	      ipage_pos = (uint32_t *) ib_head->b_start_page;
+	      for (j = 0; *(ipage_pos + j) != 0 ; j++)	
+		free_map_release (*(ipage_pos + j), 1);	
+	      memset (ib_head->b_start_page, 0, 512); 
+	    }
+	  memset (b_head->b_start_page, 0, 512); 
+	}
+      if (!i_block) /* Clean Data Block Pointed by Indirect Pointer Block */
+	{
+	  b_head = find_bcache_entry (disk_inode->indirect_block_sec);
+	  page_pos = (uint32_t *) b_head->b_start_page;
+	  for (i = 0; i < INDIRECT_BLOCK_ENTRIES && *(page_pos + i) != 0; i++)
+	    free_map_release (*(page_pos + i), 1);
+	  memset (b_head->b_start_page, 0, 512); 
+	}
+      if (!d_block) /* Clean Data Block Pointed by Inode Block */
+	{
+	  for (i = 0; i < DIRECT_BLOCK_ENTRIES && disk_inode->direct_map_table[i] != 0; i++)
+	    {
+	      free_map_release (disk_inode->direct_map_table[i], 1);
+	      disk_inode->direct_map_table[i] = 0;
+	    }
+	}
+      if (!di_pblock) /* Clean Dindirect Pointer Block */
+        {
+	  b_head = find_bcache_entry (disk_inode->double_indirect_block_sec);
+	  page_pos = (uint32_t *) b_head->b_start_page;
+	  for (f_count = 0; f_count <= p_count; f_count++)
+	    free_map_release (*(page_pos + f_count), 1);
+	  memset(b_head->b_start_page, 0, 512);
+	  free_map_release (disk_inode->double_indirect_block_sec, 1);
+	}
+      if (!i_pblock) /* Clean Indirect Pointer Block */
+        {
+          free_map_release (disk_inode->indirect_block_sec, 1);
+	}
+      if (i_pblock && di_pblock && d_block && i_block && di_block)
+		/* Write inode to the disk */
+	block_write (fs_device, sector, disk_inode);
       free (disk_inode);
     }
-  return success;
+  return i_pblock && di_pblock && d_block && i_block && di_block;
 }
 
 /* Reads an inode from SECTOR
@@ -170,6 +370,10 @@ inode_get_inumber (const struct inode *inode)
 void
 inode_close (struct inode *inode) 
 {
+  uint32_t i, j;
+  struct buffer_head *b_head, *ib_head;
+  struct inode_disk *disk_inode = NULL;
+  uint32_t *page_pos = NULL, *ipage_pos = NULL;
   /* Ignore null pointer. */
   if (inode == NULL)
     return;
@@ -183,11 +387,43 @@ inode_close (struct inode *inode)
       /* Deallocate blocks if removed. */
       if (inode->removed) 
         {
+	  /* Free Disk Inode */
           free_map_release (inode->sector, 1);
-          free_map_release (inode->data.start,
-                            bytes_to_sectors (inode->data.length)); 
+	  /* Free Data Blocks */
+	  disk_inode = &inode->data;
+	  if (disk_inode->double_indirect_block_sec)
+	  /* Free Dindirect Block Set and its Pointer blocks*/
+	    {
+	      b_head = find_bcache_entry (disk_inode->double_indirect_block_sec);
+	      page_pos = (uint32_t *) b_head->b_start_page;                      
+	      for (i = 0; *(page_pos + i) != 0; j++)                          
+  	        {                                                                
+    		  ib_head = find_bcache_entry (*(page_pos + i));                 
+    		  ipage_pos = (uint32_t *) ib_head->b_start_page;                 
+    		  for (j = 0; *(ipage_pos + j) != 0; j++)              
+      		    free_map_release (*(ipage_pos + j), 1); 
+		  memset (ipage_pos, 0, 512);
+  		} 
+	      memset (page_pos, 0, 512);
+      	      free_map_release (disk_inode->double_indirect_block_sec, 1); 
+	    }
+	  if (disk_inode->indirect_block_sec)
+	  /* Free Indirect Block Set and its Pointer blocks*/
+	    {
+	      b_head = find_bcache_entry (disk_inode->indirect_block_sec);
+	      page_pos = (uint32_t *) b_head->b_start_page;
+	      for (i = 0; i < INDIRECT_BLOCK_ENTRIES && *(page_pos + i) != 0; i++)
+      		free_map_release (*(page_pos + i), 1);
+	      memset (page_pos, 0, 512);
+      	      free_map_release (disk_inode->indirect_block_sec, 1); 
+	    }
+	  if (disk_inode->direct_map_table[0])
+	  /* Free Direct Block Set */
+	      for (i = 0; i < DIRECT_BLOCK_ENTRIES 
+		&& disk_inode->direct_map_table[i] != 0; i++)
+      		free_map_release (disk_inode->direct_map_table[i], 1);
+	  memset(disk_inode, 0, 512);
         }
-
       free (inode); 
     }
 }
@@ -228,24 +464,10 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       if (chunk_size <= 0)
         break;
       /* Find Buffer Cache Entry on the list */
-      b_head = sector_to_bhead (sector_idx, false);
-      if (!b_head) /* Block is not on Buffer Cache */
-        {
-	  if (active_b_count == BH_ENTRY) /* Need to evict LRU Buffer Cache Entry */	    
-	    b_head = evict_bcache_entry();
-	  else /* Find Free Buffer Cache Entry */
-	    b_head = sector_to_bhead (0, true);
-	  /* Initialize Free Buffer Cache Entry */
-	  ASSERT (b_head != NULL)
-    	  b_head->b_state |= (1UL << BH_Used); 
-	  b_head->b_blocknr = sector_idx;
-	  block_read (fs_device, sector_idx, b_head->b_start_page);
-	  active_b_count++;
-        }
-      /* Add Buffer Cache Entry to the LRU List */
-      list_push_back (&bh_list, &b_head->elem);
-      //printf("(%s) sector : %u b_head : %p count :%d\n", __func__,
-	//	      sector_idx, b_head, active_b_count);
+      b_head = find_bcache_entry (sector_idx);
+      
+      ASSERT (b_head != NULL);
+      
       memcpy (buffer + bytes_read, b_head->b_start_page + sector_ofs, chunk_size);
       
       /*
@@ -291,10 +513,213 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
   const uint8_t *buffer = buffer_;
   off_t bytes_written = 0;
   // uint8_t *bounce = NULL;
-  struct buffer_head *b_head = NULL;
+  struct buffer_head *b_head = NULL, *ib_head = NULL;
+  struct inode_disk *disk_inode = NULL;
+  static char zeros [BLOCK_SECTOR_SIZE];
 
   if (inode->deny_write_cnt)
     return 0;
+
+  int old_length = inode->data.length;
+  int write_end = offset + size - 1;
+
+  /* Support Extending File */
+  if (write_end > old_length - 1)
+    {
+      size_t old_sectors = bytes_to_sectors (old_length), 
+	     new_sectors = bytes_to_sectors (write_end);
+      uint32_t *page_pos, *ipage_pos, 
+	       res_dicount, p_dicount, d_dicount, d_icount, d_dcount, sentinel;
+      bool res_diblock = true, di_pblock = true, di_dblock = true, i_pblock = true,
+	   i_dblock = true, d_dblock = true;
+  
+      disk_inode = &inode->data;
+      if (new_sectors > INDIRECT_BLOCK_ENTRIES)
+	{
+          if (old_sectors <= INDIRECT_BLOCK_ENTRIES)
+	    {
+	      ASSERT (disk_inode->double_indirect_block_sec == 0)
+	      if (!free_map_allocate (1, &disk_inode->double_indirect_block_sec))
+	        return 0;
+	      else
+		block_write (fs_device, disk_inode->double_indirect_block_sec, zeros);
+	    }
+	  b_head = find_bcache_entry (disk_inode->double_indirect_block_sec);
+	  page_pos = (uint32_t *) b_head->b_start_page;
+
+	  /* Allocate Doulbe Indirect Pointer Block */
+	  if (old_sectors > INDIRECT_BLOCK_ENTRIES
+		&& (old_sectors - INDIRECT_BLOCK_ENTRIES) % 128)
+	    {
+	      sentinel = new_sectors - old_sectors > 127 ? 128 
+	  	      : (new_sectors - INDIRECT_BLOCK_ENTRIES % 128);
+	      ib_head = find_bcache_entry (*(page_pos 
+			+ (old_sectors - INDIRECT_BLOCK_ENTRIES)/128));
+	      ipage_pos = (uint32_t *) ib_head->b_start_page;
+	      for (res_dicount = (old_sectors - INDIRECT_BLOCK_ENTRIES) % 128; 
+		res_dicount < sentinel; res_dicount++)
+	        {
+		  if (!free_map_allocate(1, ipage_pos + res_dicount))
+		    {
+		      res_diblock = false;
+		      goto done;
+		    }
+		  else
+		    block_write (fs_device, *(ipage_pos + res_dicount), zeros);
+	        }
+              ib_head->b_state |= (1UL << BH_Dirty); 
+	    }
+
+	  /* Allocate Indirect Pointer Block Set */
+	  p_dicount = old_sectors < INDIRECT_BLOCK_ENTRIES ? 0 : 
+		  DIV_ROUND_UP((old_sectors - INDIRECT_BLOCK_ENTRIES), 128);
+	  for (;p_dicount < DIV_ROUND_UP((new_sectors - INDIRECT_BLOCK_ENTRIES), 128); 
+			  p_dicount++)
+	    {
+	      if (!free_map_allocate (1, page_pos + p_dicount))
+	        {
+		  di_pblock = res_diblock = false;
+		  goto done;
+		}
+	      else 
+	        block_write (fs_device, *(page_pos + p_dicount), zeros);
+	    }
+          b_head->b_state |= (1UL << BH_Dirty); 
+	  
+	  /* Fill Up Indirect Pointer Block Set */
+	  p_dicount = old_sectors < INDIRECT_BLOCK_ENTRIES ? 0 : 
+		  DIV_ROUND_UP((old_sectors - INDIRECT_BLOCK_ENTRIES), 128);
+	  for (;p_dicount < DIV_ROUND_UP((new_sectors - INDIRECT_BLOCK_ENTRIES), 128); 
+			  p_dicount++)
+	    {
+	      ib_head = find_bcache_entry (*(page_pos + p_dicount));
+	      ipage_pos = (uint32_t *) ib_head->b_start_page;
+	      sentinel = new_sectors - (old_sectors + p_dicount * 128) < 128 ? 
+		      (new_sectors - INDIRECT_BLOCK_ENTRIES) % 128: 128;
+	      for (d_dicount = 0; d_dicount < sentinel; d_dicount++)
+		{
+	      	  if (!free_map_allocate (1, ipage_pos + d_dicount))
+	            {
+		      di_dblock = di_pblock = res_diblock = false;
+		      goto done;
+		    }
+	      	  else 
+	            block_write (fs_device, *(ipage_pos + d_dicount), zeros);
+		}
+              ib_head->b_state |= (1UL << BH_Dirty); 
+	    }
+	}
+
+      if (new_sectors > DIRECT_BLOCK_ENTRIES)
+	{
+	  if (old_sectors <= DIRECT_BLOCK_ENTRIES)
+	    {
+	      ASSERT (disk_inode->indirect_block_sec == 0)
+	      if (!free_map_allocate (1, &disk_inode->indirect_block_sec))
+		{
+		  i_pblock = di_dblock = di_pblock = res_diblock = false;
+		  goto done;
+		}
+	      else
+		block_write (fs_device, disk_inode->indirect_block_sec, zeros);
+	    }
+	  b_head = find_bcache_entry (disk_inode->indirect_block_sec);
+	  page_pos = (uint32_t *) b_head->b_start_page;
+	  sentinel = new_sectors - old_sectors < 128 ? 
+		  (new_sectors - DIRECT_BLOCK_ENTRIES) % 128: 128;
+	  d_icount = old_sectors < DIRECT_BLOCK_ENTRIES ? 0
+		  : (old_sectors - DIRECT_BLOCK_ENTRIES) % 128;
+	  for (; d_icount < sentinel; d_icount++)
+	    {
+	      if (!free_map_allocate (1, page_pos + d_icount))
+		{
+		  i_dblock = i_pblock = di_dblock = di_pblock = res_diblock = false;
+		  goto done;
+		}
+	      else
+		block_write (fs_device, *(page_pos + d_icount), zeros);
+	    }
+          b_head->b_state |= (1UL << BH_Dirty); 
+	}
+        if (old_sectors < DIRECT_BLOCK_ENTRIES)
+	  {
+	    sentinel = new_sectors > DIRECT_BLOCK_ENTRIES ? 
+		    DIRECT_BLOCK_ENTRIES : new_sectors;
+            for (d_dcount = old_sectors; d_dcount < sentinel; d_dcount++)
+	      {
+	        if (!free_map_allocate (1, &disk_inode->direct_map_table[d_dcount]))
+		  {
+		    d_dblock = i_dblock = i_pblock = di_dblock = di_pblock = res_diblock = false;
+		    goto done;
+		  }
+	        else
+		  block_write (fs_device, disk_inode->direct_map_table[d_dcount], zeros);
+	      }
+	  }
+        done: /* Reclaim Allocated Blocks at the failure case */
+        if (!res_diblock)
+	  {
+	    b_head = find_bcache_entry (disk_inode->double_indirect_block_sec); 
+	    page_pos = (uint32_t *) b_head->b_start_page;                       
+    	    sentinel = new_sectors - old_sectors > 127 ? 128                 
+        	    : (new_sectors - INDIRECT_BLOCK_ENTRIES % 128);          
+    	    ib_head = find_bcache_entry (*(page_pos                          
+              		+ (old_sectors - INDIRECT_BLOCK_ENTRIES)/128));        
+    	    ipage_pos = (uint32_t *) ib_head->b_start_page;                  
+    	    for (res_dicount = (old_sectors - INDIRECT_BLOCK_ENTRIES) % 128; 
+      	    	res_dicount < sentinel; res_dicount++)                         
+              free_map_release(*(ipage_pos + res_dicount), 1);         
+	  }
+        if (!di_dblock)
+	  {
+	    b_head = find_bcache_entry (disk_inode->double_indirect_block_sec); 
+	    page_pos = (uint32_t *) b_head->b_start_page;                       
+	    for (p_dicount = DIV_ROUND_UP((old_sectors - INDIRECT_BLOCK_ENTRIES), 128);          
+   	      p_dicount < DIV_ROUND_UP((new_sectors - INDIRECT_BLOCK_ENTRIES), 128); 
+	      p_dicount++)
+  	      {                                                                                  
+    		ib_head = find_bcache_entry (*(page_pos + p_dicount));                           
+    		ipage_pos = (uint32_t *) ib_head->b_start_page;                                  
+    		sentinel = new_sectors - (old_sectors + p_dicount * 128) < 128 ?                     
+        	    (new_sectors - INDIRECT_BLOCK_ENTRIES) % 128: 128;                       
+    		for (d_dicount = 0; d_dicount < sentinel; d_dicount++)                           
+        	  free_map_release (*(ipage_pos + d_dicount), 1); 
+             }                                                                                  
+	  }
+        if (!di_pblock)
+	  {
+	    b_head = find_bcache_entry (disk_inode->double_indirect_block_sec); 
+	    page_pos = (uint32_t *) b_head->b_start_page;                       
+	    for (p_dicount = DIV_ROUND_UP((old_sectors - INDIRECT_BLOCK_ENTRIES), 128);          
+  	      p_dicount < DIV_ROUND_UP((new_sectors - INDIRECT_BLOCK_ENTRIES), 128); 
+	      p_dicount++)
+    	      free_map_release (*(page_pos + p_dicount), 1); 
+	  }
+        if (!i_dblock)
+	  {
+	    b_head = find_bcache_entry (disk_inode->indirect_block_sec);              
+	    page_pos = (uint32_t *) b_head->b_start_page;                             
+            sentinel = new_sectors - old_sectors < 128 ?                              
+        	(new_sectors - DIRECT_BLOCK_ENTRIES) % 128: 128;                  
+	    for (d_icount = (old_sectors - DIRECT_BLOCK_ENTRIES) % 128;               
+      	      d_icount < sentinel; d_icount++)                                    
+	      free_map_release (*(page_pos + d_icount), 1);
+	  }
+        if (!i_pblock)
+	  free_map_release (disk_inode->indirect_block_sec, 1);
+        if (!d_dblock)
+	  {
+            for (d_dcount = old_sectors; d_dcount < new_sectors ; d_dcount++)
+	      free_map_release (disk_inode->direct_map_table[d_dcount], 1);
+	  }
+	if (!(res_diblock && di_pblock && di_dblock && i_pblock && i_dblock && d_dblock))
+	  return 0;
+	else
+	  {
+	    disk_inode->length += (write_end - old_length + 1);
+	    block_write (fs_device, inode->sector, disk_inode);
+	  }
+    }
 
   while (size > 0) 
     {
@@ -313,27 +738,10 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
         break;
 
       /* Find Buffer Cache Entry on the list */
-      b_head = sector_to_bhead (sector_idx, false);
-      if (!b_head) /* Block is not on Buffer Cache */
-        {
-          if (active_b_count == BH_ENTRY) /* Need to evict LRU Buffer Cache Entry */
-            b_head = evict_bcache_entry();
-          else /* Find Free Buffer Cache Entry */
-            b_head = sector_to_bhead (0, true);
-          /* Initialize Free Buffer Cache Entry */
-          ASSERT (b_head != NULL)
-    	  b_head->b_state |= (1UL << BH_Used); 
-	  b_head->b_blocknr = sector_idx;
-          block_read (fs_device, sector_idx, b_head->b_start_page);
-          active_b_count++;
-        }
-      //else
-      //  printf("(%s) Find buffer head!\n");
-      /* Add Buffer Cache Entry to the LRU List */
-      list_push_back (&bh_list, &b_head->elem);
-      //printf("(%s) sector : %u b_head : %p count :%d\n"
-	//	      , __func__, sector_idx, b_head, active_b_count);
-      // b_head->b_state |= (1UL << BH_Dirty); 
+      b_head = find_bcache_entry (sector_idx);
+      
+      ASSERT (b_head != NULL);
+      
       memcpy (b_head->b_start_page + sector_ofs, buffer + bytes_written, chunk_size);
       b_head->b_state |= (1UL << BH_Dirty); 
 
@@ -419,6 +827,9 @@ sector_to_bhead (block_sector_t sector_idx, bool free)
       }
     if (free && (b_head->b_state & (1UL << BH_Used)) != (1UL << BH_Used)) 
       {
+	memset(b_head->b_start_page, 0, 512);
+	b_head->b_state = 0;
+	b_head->b_blocknr = 0;
 	list_remove (&b_head->elem);
         return b_head;
       }
@@ -441,6 +852,30 @@ evict_bcache_entry (void)
   b_head->b_blocknr = 0;
   active_b_count--;
   // printf("(%s) b_head : %p count :%d\n", __func__, b_head, active_b_count);
+  return b_head;
+}
+
+struct buffer_head *
+find_bcache_entry(block_sector_t sector_idx)
+{
+  struct buffer_head *b_head = NULL;
+
+  b_head = sector_to_bhead (sector_idx, false);
+  if (!b_head) /* Block is not on Buffer Cache */
+    {
+      if (active_b_count == BH_ENTRY) /* Need to evict LRU Buffer Cache Entry */	    
+        b_head = evict_bcache_entry();
+      else /* Find Free Buffer Cache Entry */
+        b_head = sector_to_bhead (0, true);
+      /* Initialize Free Buffer Cache Entry */
+      ASSERT (b_head != NULL)
+      b_head->b_state |= (1UL << BH_Used); 
+      b_head->b_blocknr = sector_idx;
+      block_read (fs_device, sector_idx, b_head->b_start_page);
+      active_b_count++;
+    }
+    /* Add Buffer Cache Entry to the LRU List */
+    list_push_back (&bh_list, &b_head->elem);
   return b_head;
 }
 

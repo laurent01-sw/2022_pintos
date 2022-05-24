@@ -1,0 +1,92 @@
+diff --git a/src/tests/vm/page-linear.c b/src/tests/vm/page-linear.c
+index 652a47b..593f093 100644
+--- a/src/tests/vm/page-linear.c
++++ b/src/tests/vm/page-linear.c
+@@ -7,8 +7,11 @@
+ #include "tests/main.h"
+ 
+ #define SIZE (2 * 1024 * 1024)
++//#define SIZE (4 * 1024 * 1024)    4MB buffer.
++//#define SIZE (8 * 1024 * 1024)    8MB buffer.
++//#define SIZE (16 * 1024 * 1024)  16MB buffer.
+ 
+-static char buf[SIZE];
++static char buf[SIZE] = {0};
+ 
+ void
+ test_main (void)
+diff --git a/src/threads/pte.h b/src/threads/pte.h
+index 1660727..b34c546 100644
+--- a/src/threads/pte.h
++++ b/src/threads/pte.h
+@@ -66,6 +66,7 @@ static inline uintptr_t pd_no (const void *va) {
+ #define PTE_U 0x4               /* 1=user/kernel, 0=kernel only. */
+ #define PTE_A 0x20              /* 1=accessed, 0=not acccessed. */
+ #define PTE_D 0x40              /* 1=dirty, 0=not dirty (PTEs only). */
++#define PTE_PS 0x80             /* 1=huge page, 0=not */
+ 
+ /* Returns a PDE that points to page table PT. */
+ static inline uint32_t pde_create (uint32_t *pt) {
+diff --git a/src/threads/start.S b/src/threads/start.S
+index 29ffa7a..9c671b9 100644
+--- a/src/threads/start.S
++++ b/src/threads/start.S
+@@ -123,6 +123,10 @@ start:
+ 	movl $0xf000, %eax
+ 	movl %eax, %cr3
+ 
++  movl %cr4, %eax
++  orl  $0x0010, %eax
++  movl %eax, %cr4
++
+ #### Switch to protected mode.
+ 
+ # First, disable interrupts.  We won't set up the IDT until we get
+diff --git a/src/threads/vaddr.h b/src/threads/vaddr.h
+index 184c824..51840db 100644
+--- a/src/threads/vaddr.h
++++ b/src/threads/vaddr.h
+@@ -19,6 +19,10 @@
+ #define PGBITS  12                         /* Number of offset bits. */
+ #define PGSIZE  (1 << PGBITS)              /* Bytes in a page. */
+ #define PGMASK  BITMASK(PGSHIFT, PGBITS)   /* Page offset bits (0:12). */
++#define HPGBITS 22                         /* Number of offset bits
++                                              for huge page. */
++#define HPGSIZE (1 << HPGBITS)             /* Bytes in a huge page (4MB). */
++#define HPGMASK BITMASK(0, HPGBITS)        /* Huge page offset bits (0:22). */
+ 
+ /* Offset within a page. */
+ static inline unsigned pg_ofs (const void *va) {
+diff --git a/src/userprog/process.c b/src/userprog/process.c
+index c0e5215..8fa98f5 100644
+--- a/src/userprog/process.c
++++ b/src/userprog/process.c
+@@ -395,6 +395,15 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
+          and zero the final PAGE_ZERO_BYTES bytes. */
+       size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
+       size_t page_zero_bytes = PGSIZE - page_read_bytes;
++      size_t hpage_read_bytes = read_bytes < HPGSIZE ? read_bytes : HPGSIZE;
++      size_t hpage_zero_bytes = HPGSIZE - hpage_read_bytes;
++
++      if (read_bytes + zero_bytes >= HPGSIZE && \
++         ((uint32_t) pg_round_down(upage) & HPGMASK) == 0) {
++        /* Huge Page. */
++      } else {
++        /* 4KB Page. */
++      }
+ 
+       /* Get a page of memory. */
+       uint8_t *kpage = palloc_get_page (PAL_USER);
+diff --git a/src/utils/pintos b/src/utils/pintos
+index 58635a9..f21846d 100755
+--- a/src/utils/pintos
++++ b/src/utils/pintos
+@@ -14,7 +14,7 @@ BEGIN { my $self = $0; $self =~ s%/+[^/]*$%%; require "$self/Pintos.pm"; }
+ our ($start_time) = time ();
+ our ($sim);			# Simulator: bochs, qemu, or player.
+ our ($debug) = "none";		# Debugger: none, monitor, or gdb.
+-our ($mem) = 4;			# Physical RAM in MB.
++our ($mem) = 128;			# Physical RAM in MB.
+ our ($serial) = 1;		# Use serial port for input and output?
+ our ($vga);			# VGA output: window, terminal, or none.
+ our ($jitter);			# Seed for random timer interrupts, if set.

@@ -45,7 +45,8 @@ void inode_deny_write (struct inode *);
 void inode_allow_write (struct inode *);
 off_t inode_length (const struct inode *);
 struct buffer_head *sector_to_bhead (block_sector_t, bool);
-struct buffer_head * evict_bcache_entry (void);
+struct buffer_head *evict_bcache_entry (void);
+struct buffer_head *find_bcache_entry (block_sector_t);
 void pdflush (void);
 
 #endif /* filesys/inode.h */

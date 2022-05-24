@@ -1,0 +1,620 @@
+diff --git a/src/cscope.in.out b/src/cscope.in.out
+index a7d83c5..7eabdbd 100644
+Binary files a/src/cscope.in.out and b/src/cscope.in.out differ
+diff --git a/src/cscope.po.out b/src/cscope.po.out
+index 32de577..fa252e5 100644
+Binary files a/src/cscope.po.out and b/src/cscope.po.out differ
+diff --git a/src/tests/vm/Make.tests b/src/tests/vm/Make.tests
+index 04b1b81..c364acf 100644
+--- a/src/tests/vm/Make.tests
++++ b/src/tests/vm/Make.tests
+@@ -1,13 +1,6 @@
+ # -*- makefile -*-
+ 
+-tests/vm_TESTS = $(addprefix tests/vm/,pt-grow-stack pt-grow-pusha	\
+-pt-grow-bad pt-big-stk-obj pt-bad-addr pt-bad-read pt-write-code	\
+-pt-write-code2 pt-grow-stk-sc page-linear page-parallel page-merge-seq	\
+-page-merge-par page-merge-stk page-merge-mm page-shuffle mmap-read	\
+-mmap-close mmap-unmap mmap-overlap mmap-twice mmap-write mmap-exit	\
+-mmap-shuffle mmap-bad-fd mmap-clean mmap-inherit mmap-misalign		\
+-mmap-null mmap-over-code mmap-over-data mmap-over-stk mmap-remove	\
+-mmap-zero)
++tests/vm_TESTS = $(addprefix tests/vm/,page-linear)
+ 
+ tests/vm_PROGS = $(tests/vm_TESTS) $(addprefix tests/vm/,child-linear	\
+ child-sort child-qsort child-qsort-mm child-mm-wrt child-inherit)
+diff --git a/src/tests/vm/page-linear.c b/src/tests/vm/page-linear.c
+index 652a47b..add74ba 100644
+--- a/src/tests/vm/page-linear.c
++++ b/src/tests/vm/page-linear.c
+@@ -6,9 +6,12 @@
+ #include "tests/lib.h"
+ #include "tests/main.h"
+ 
+-#define SIZE (2 * 1024 * 1024)
++//#define SIZE (2 * 1024 * 1024)
++//#define SIZE (4 * 1024 * 1024)    // 4MB buffer.
++#define SIZE (8 * 1024 * 1024)  //  8MB buffer.
++//#define SIZE (16 * 1024 * 1024) // 16MB buffer.
+ 
+-static char buf[SIZE];
++static char buf[SIZE] = {0};
+ 
+ void
+ test_main (void)
+diff --git a/src/threads/palloc.c b/src/threads/palloc.c
+index 9843961..5a2f8ae 100644
+--- a/src/threads/palloc.c
++++ b/src/threads/palloc.c
+@@ -34,7 +34,7 @@ struct pool
+   };
+ 
+ /* Two pools: one for kernel data, one for user pages. */
+-static struct pool kernel_pool, user_pool;
++static struct pool kernel_pool, user_pool, huser_pool;
+ 
+ static void init_pool (struct pool *, void *base, size_t page_cnt,
+                        const char *name);
+@@ -49,7 +49,7 @@ palloc_init (size_t user_page_limit)
+   uint8_t *free_start = ptov (1024 * 1024);
+   uint8_t *free_end = ptov (init_ram_pages * PGSIZE);
+   size_t free_pages = (free_end - free_start) / PGSIZE;
+-  size_t user_pages = free_pages / 2;
++  size_t user_pages = free_pages / 4;
+   size_t kernel_pages;
+   if (user_pages > user_page_limit)
+     user_pages = user_page_limit;
+@@ -59,6 +59,8 @@ palloc_init (size_t user_page_limit)
+   init_pool (&kernel_pool, free_start, kernel_pages, "kernel pool");
+   init_pool (&user_pool, free_start + kernel_pages * PGSIZE,
+              user_pages, "user pool");
++  init_pool (&huser_pool, free_start + kernel_pages * PGSIZE + user_pages * PGSIZE,
++             user_pages * PGSIZE / HPGSIZE, "huser pool");
+ }
+ 
+ /* Obtains and returns a group of PAGE_CNT contiguous free pages.
+@@ -157,6 +159,9 @@ init_pool (struct pool *p, void *base, size_t page_cnt, const char *name)
+      Calculate the space needed for the bitmap
+      and subtract it from the pool's size. */
+   size_t bm_pages = DIV_ROUND_UP (bitmap_buf_size (page_cnt), PGSIZE);
++  if (!strcmp(name,"huser pool")) {
++	  bm_pages = DIV_ROUND_UP (bitmap_buf_size(page_cnt), HPGSIZE);
++  }
+   if (bm_pages > page_cnt)
+     PANIC ("Not enough memory in %s for bitmap.", name);
+   page_cnt -= bm_pages;
+diff --git a/src/threads/pte.h b/src/threads/pte.h
+index 1660727..190598a 100644
+--- a/src/threads/pte.h
++++ b/src/threads/pte.h
+@@ -66,6 +66,7 @@ static inline uintptr_t pd_no (const void *va) {
+ #define PTE_U 0x4               /* 1=user/kernel, 0=kernel only. */
+ #define PTE_A 0x20              /* 1=accessed, 0=not acccessed. */
+ #define PTE_D 0x40              /* 1=dirty, 0=not dirty (PTEs only). */
++#define PTE_PS 0x80             /* 1=huge page, 0=not */
+ 
+ /* Returns a PDE that points to page table PT. */
+ static inline uint32_t pde_create (uint32_t *pt) {
+@@ -73,6 +74,10 @@ static inline uint32_t pde_create (uint32_t *pt) {
+   return vtop (pt) | PTE_U | PTE_P | PTE_W;
+ }
+ 
++static inline uint32_t hpde_create (uint32_t *pt) {
++  return vtop (pt) | PTE_U | PTE_P | PTE_W | PTE_PS;
++}
++
+ /* Returns a pointer to the page table that page directory entry
+    PDE, which must "present", points to. */
+ static inline uint32_t *pde_get_pt (uint32_t pde) {
+diff --git a/src/threads/start.S b/src/threads/start.S
+index 29ffa7a..9c671b9 100644
+--- a/src/threads/start.S
++++ b/src/threads/start.S
+@@ -123,6 +123,10 @@ start:
+ 	movl $0xf000, %eax
+ 	movl %eax, %cr3
+ 
++  movl %cr4, %eax
++  orl  $0x0010, %eax
++  movl %eax, %cr4
++
+ #### Switch to protected mode.
+ 
+ # First, disable interrupts.  We won't set up the IDT until we get
+diff --git a/src/threads/vaddr.h b/src/threads/vaddr.h
+index 184c824..18d4e08 100644
+--- a/src/threads/vaddr.h
++++ b/src/threads/vaddr.h
+@@ -19,6 +19,10 @@
+ #define PGBITS  12                         /* Number of offset bits. */
+ #define PGSIZE  (1 << PGBITS)              /* Bytes in a page. */
+ #define PGMASK  BITMASK(PGSHIFT, PGBITS)   /* Page offset bits (0:12). */
++#define HPGBITS 22                         /* Number of offset bits
++                                              for huge page. */
++#define HPGSIZE (1 << HPGBITS)             /* Bytes in a huge page (4MB). */
++#define HPGMASK BITMASK(0, HPGBITS)        /* Huge page offset bits (0:22). */
+ 
+ /* Offset within a page. */
+ static inline unsigned pg_ofs (const void *va) {
+@@ -39,7 +43,14 @@ static inline void *pg_round_up (const void *va) {
+ static inline void *pg_round_down (const void *va) {
+   return (void *) ((uintptr_t) va & ~PGMASK);
+ }
+-
++
++static inline void *hpg_round_up (const void *va) {
++  return (void *) (((uintptr_t) va + HPGSIZE - 1) & ~HPGMASK);
++}
++
++static inline void *hpg_round_down (const void *va) {
++  return (void *) ((uintptr_t) va & ~HPGMASK);
++}
+ /* Base address of the 1:1 physical-to-virtual mapping.  Physical
+    memory is mapped starting at this virtual address.  Thus,
+    physical address 0 is accessible at PHYS_BASE, physical
+diff --git a/src/userprog/exception.c b/src/userprog/exception.c
+index 4f7c26b..b536989 100755
+--- a/src/userprog/exception.c
++++ b/src/userprog/exception.c
+@@ -239,7 +239,7 @@ handle_mm_fault (
+       vme->pf->pinned = false;
+       return;
+    }
+-
++   
+ 
+ #define __VALID_STACK__(ESP, FA) \
+    (ESP <= FA || FA == ESP - 4 || FA == ESP - 32) && \
+@@ -273,7 +273,7 @@ handle_mm_fault (
+    if (vme->page_type == MMAP)
+       handle_mmap_fault (fault_addr);
+ 
+-   else if (vme->page_type == ELF)
++   else if (vme->page_type == ELF || vme->page_type == HUGE_PAGE)
+       handle_load_elf (fault_addr);
+ 
+    else
+@@ -313,13 +313,46 @@ handle_load_elf (void *fault_addr)
+ {
+    struct thread *t = thread_current ();
+    struct vm_entry *vme;
+-   uint8_t *kpage;
++   uint8_t *kpage, *k1page, *k2page;
+ 
+    fault_addr = pg_round_down (fault_addr);
+ 
+    vme = find_vme (&(t->vm), fault_addr);
++   //if (fault_addr == 0x8400000)
++   //	   printf("%s, type : %x\n",__func__,vme->page_type);
++
++   if (vme->page_type == HUGE_PAGE) {
++	kpage = palloc_get_multiple(PAL_USER | PAL_ZERO, 2048);
++	//printf("alloc kpage : %p\n",kpage);
++	k1page = hpg_round_down(kpage + HPGSIZE);
++	//printf("rounded kpage : %p\n",k1page);
++	palloc_free_multiple(kpage, (k1page - kpage) / PGSIZE );
++	palloc_free_multiple(k1page + HPGSIZE, (kpage + HPGSIZE - k1page) / PGSIZE);
++
++   	ASSERT (vme != NULL);
++   	ASSERT (kpage != NULL);
++
++   	file_seek (vme->ti.exe_file, vme->ti.ofs);
++
++   	if (file_read (vme->ti.exe_file, kpage, vme->ti.rbytes) != (int) vme->ti.rbytes)
++   	{
++   	   palloc_free_page (kpage);
++   	   ASSERT (false);
++   	}
++
++   	vme->paddr = kpage;
++   	vme->si.loc = MEMORY;
+    
+-   kpage =  alloc_pframe (PAL_USER);
++	if (!install_hpage (vme->vaddr, k1page, vme->writable)) 
++   	{
++   	   palloc_free_multiple (k1page, 1024);
++   	   ASSERT (false);
++   	}
++   	
++	return;
++   }
++   
++   kpage = alloc_pframe (PAL_USER);
+    
+    ASSERT (vme != NULL);
+    ASSERT (kpage != NULL);
+@@ -557,4 +590,4 @@ force_reserve_pages (void *addr, uint32_t size)
+       swap_out ();
+       req_addr += PGSIZE;
+    }
+-}
+\ No newline at end of file
++}
+diff --git a/src/userprog/pagedir.c b/src/userprog/pagedir.c
+index a6a87b8..d4622e3 100644
+--- a/src/userprog/pagedir.c
++++ b/src/userprog/pagedir.c
+@@ -66,6 +66,8 @@ lookup_page (uint32_t *pd, const void *vaddr, bool create)
+   /* Check for a page table for VADDR.
+      If one is missing, create one if requested. */
+   pde = pd + pd_no (vaddr);
++  if (pde == 0xc011a084)
++  	printf("(%s) pde : %p, *pde : %p\n",__func__, pde, *pde);
+   if (*pde == 0) 
+     {
+       if (create)
+@@ -75,7 +77,7 @@ lookup_page (uint32_t *pd, const void *vaddr, bool create)
+             return NULL; 
+       
+           *pde = pde_create (pt);
+-        }
++          }
+       else
+         return NULL;
+     }
+@@ -85,6 +87,33 @@ lookup_page (uint32_t *pd, const void *vaddr, bool create)
+   return &pt[pt_no (vaddr)];
+ }
+ 
++static uint32_t *
++lookup_hpage (uint32_t *pd, const void *vaddr, const void *kpage, bool create)
++{
++  uint32_t *pt, *pde;
++
++  ASSERT (pd != NULL);
++
++  /* Shouldn't create new kernel virtual mappings. */
++  ASSERT (!create || is_user_vaddr (vaddr));
++
++  /* Check for a page table for VADDR.
++     If one is missing, create one if requested. */
++  pde = pd + pd_no (vaddr);
++  if (*pde == 0) 
++    {
++      if (create)
++	{
++	  *pde = hpde_create (kpage);
++	}
++      else
++	return NULL;
++    }
++
++  /* Return the page table entry. */
++  return *pde;
++}
++
+ /* Adds a mapping in page directory PD from user virtual page
+    UPAGE to the physical frame identified by kernel virtual
+    address KPAGE.
+@@ -118,6 +147,20 @@ pagedir_set_page (uint32_t *pd, void *upage, void *kpage, bool writable)
+     return false;
+ }
+ 
++bool
++pagedir_set_hpage (uint32_t *pd, void *upage, void *kpage, bool writable)
++{
++  uint32_t *pde;
++
++  pde = lookup_hpage (pd, upage, kpage, true);
++
++  if (pde != NULL) 
++      return true;
++  else
++    return false;
++}
++
++
+ /* Looks up the physical address that corresponds to user virtual
+    address UADDR in PD.  Returns the kernel virtual address
+    corresponding to that physical address, or a null pointer if
+@@ -136,6 +179,18 @@ pagedir_get_page (uint32_t *pd, const void *uaddr)
+     return NULL;
+ }
+ 
++void *
++pagedir_get_hpage (uint32_t *pd, const void *uaddr) 
++{
++  uint32_t *pde;
++
++  pde = lookup_hpage (pd, uaddr, NULL, false);
++  if (pde != NULL && (*pde & PTE_P) != 0)
++    return (unsigned) ((uintptr_t)pde & HPGMASK);
++  else
++    return NULL;
++}
++
+ /* Marks user virtual page UPAGE "not present" in page
+    directory PD.  Later accesses to the page will fault.  Other
+    bits in the page table entry are preserved.
+diff --git a/src/userprog/pagedir.h b/src/userprog/pagedir.h
+index cd92447..985dafe 100644
+--- a/src/userprog/pagedir.h
++++ b/src/userprog/pagedir.h
+@@ -7,7 +7,9 @@
+ uint32_t *pagedir_create (void);
+ void pagedir_destroy (uint32_t *pd);
+ bool pagedir_set_page (uint32_t *pd, void *upage, void *kpage, bool rw);
++bool pagedir_set_hpage (uint32_t *pd, void *upage, void *kpage, bool rw);
+ void *pagedir_get_page (uint32_t *pd, const void *upage);
++void *pagedir_get_hpage (uint32_t *pd, const void *upage);
+ void pagedir_clear_page (uint32_t *pd, void *upage);
+ bool pagedir_is_dirty (uint32_t *pd, const void *upage);
+ void pagedir_set_dirty (uint32_t *pd, const void *upage, bool dirty);
+diff --git a/src/userprog/process.c b/src/userprog/process.c
+index 11de717..90230aa 100755
+--- a/src/userprog/process.c
++++ b/src/userprog/process.c
+@@ -488,86 +488,111 @@ load_segment (struct file *file, off_t ofs, uint8_t *upage,
+          and zero the final PAGE_ZERO_BYTES bytes. */
+       size_t page_read_bytes = read_bytes < PGSIZE ? read_bytes : PGSIZE;
+       size_t page_zero_bytes = PGSIZE - page_read_bytes;
+-        
+-      // Deleted: Proejct 3.
+-      /* Get a page of memory. */
+-      // uint8_t *kpage = palloc_get_page (PAL_USER);
+-      // if (kpage == NULL)
+-      //   return false;
+-
+-      // Deleted: Project 3.
+-      /* Load this page. */
+-      // if (file_read (file, kpage, page_read_bytes) != (int) page_read_bytes)
+-      //   {
+-      //     palloc_free_page (kpage);
+-      //     return false; 
+-      //   }
+-
+-      // Deleted: Project 3.
+-      // memset (kpage + page_read_bytes, 0, page_zero_bytes);
+-        
+-      // Deleted: Project 3.
+-      /* Add the page to the process's address space. */
+-      // if (!install_page (upage, kpage, writable)) 
+-      //   {
+-      //     palloc_free_page (kpage);
+-      //     return false; 
+-      //   }
+-
+-      /* Create vm_entry (Use malloc) */
+-      /* Setting vm_entry members, offset and size of file to read
+-         when virtual page is required, zero  byte to pad at the end.
+-         Add vm_entry to hash table by insert_vme() */
+-
+-      // 1. Create vm_entry
+-      t_vme = malloc (sizeof (struct vm_entry));
+-
+-      // text_info_.exe_name = malloc(sizeof (strlen (exe_name)) + 1);
+-      // strlcpy (text_info_.exe_name, exe_name, strlen (exe_name) + 1);
+-      ASSERT (t_vme != NULL);
+-
+-      text_info_.owner        = thread_current ();
+-      text_info_.exe_file     = file;
+-      text_info_.rbytes       = page_read_bytes;
+-      text_info_.zbytes       = page_zero_bytes;
+-
+-      swap_info_.loc          = VALHALLA;
+-      swap_info_.blk_idx      = 3;
+-
+-      mmap_info_.loc          = VALHALLA;
+-      // mmap_info_.blk_idx      = 3;
+-      mmap_info_.fobj         = NULL;
+-      mmap_info_.fd           = 0;
+-      mmap_info_.ofs          = 0;
+-      mmap_info_.rbytes       = 0;
+-      mmap_info_.zbytes       = 0;
+-      mmap_info_.self         = t_vme;
++
++      size_t hpage_read_bytes = read_bytes < HPGSIZE ? read_bytes : HPGSIZE;
++      size_t hpage_zero_bytes = HPGSIZE - hpage_read_bytes;
++
++      if (read_bytes + zero_bytes >= HPGSIZE  && \
++	((uint32_t) pg_round_down(upage) & HPGMASK) == 0) {
++        /* Huge Page. */
++      	t_vme = malloc (sizeof (struct vm_entry));
++
++      	// text_info_.exe_name = malloc(sizeof (strlen (exe_name)) + 1);
++      	// strlcpy (text_info_.exe_name, exe_name, strlen (exe_name) + 1);
++      	ASSERT (t_vme != NULL);
++
++      	text_info_.owner        = thread_current ();
++      	text_info_.exe_file     = file;
++      	text_info_.rbytes       = hpage_read_bytes;
++      	text_info_.zbytes       = hpage_zero_bytes;
++
++      	swap_info_.loc          = VALHALLA;
++      	swap_info_.blk_idx      = 3;
++
++      	mmap_info_.loc          = VALHALLA;
++      	// mmap_info_.blk_idx      = 3;
++      	mmap_info_.fobj         = NULL;
++      	mmap_info_.fd           = 0;
++      	mmap_info_.ofs          = 0;
++      	mmap_info_.rbytes       = 0;
++      	mmap_info_.zbytes       = 0;
++      	mmap_info_.self         = t_vme;
+       
+-      // 2. Initialize vm_entry members.
+-      init_vm_entry (
+-            t_vme,      // Target
+-            upage,      // upage (arg of load_segment)     
+-            writable,   // Permission
+-            &text_info_,
+-            &swap_info_,
+-            &mmap_info_,
+-            ELF
++      	// 2. Initialize vm_entry members.
++      	init_vm_entry (
++        	t_vme,      // Target
++            	upage,      // upage (arg of load_segment)     
++            	writable,   // Permission
++            	&text_info_,
++            	&swap_info_,
++            	&mmap_info_,
++            	HUGE_PAGE
+           );
+ 
+       
+-      // 3. Insert a vm_entry
+-      if (!insert_vme ( &(thread_current ()->vm), t_vme))
+-      {
+-        free (t_vme);
+-        ASSERT (false); // Raise panic
+-      }
+-
+-      /* Advance. */
+-      read_bytes -= page_read_bytes;
+-      zero_bytes -= page_zero_bytes;
+-      upage += PGSIZE;
++      	// 3. Insert a vm_entry
++      	if (!insert_vme ( &(thread_current ()->vm), t_vme))
++      	{
++      	  free (t_vme);
++      	  ASSERT (false); // Raise panic
++      	}
++
++      	/* Advance. */
++      	read_bytes -= hpage_read_bytes;
++      	zero_bytes -= hpage_zero_bytes;
++      	upage += HPGSIZE;
++
++      	text_info_.ofs += HPGSIZE;
++      } else {  
++      	t_vme = malloc (sizeof (struct vm_entry));
++
++      	// text_info_.exe_name = malloc(sizeof (strlen (exe_name)) + 1);
++      	// strlcpy (text_info_.exe_name, exe_name, strlen (exe_name) + 1);
++      	ASSERT (t_vme != NULL);
++
++      	text_info_.owner        = thread_current ();
++      	text_info_.exe_file     = file;
++      	text_info_.rbytes       = page_read_bytes;
++      	text_info_.zbytes       = page_zero_bytes;
++
++      	swap_info_.loc          = VALHALLA;
++      	swap_info_.blk_idx      = 3;
++
++      	mmap_info_.loc          = VALHALLA;
++      	// mmap_info_.blk_idx      = 3;
++      	mmap_info_.fobj         = NULL;
++      	mmap_info_.fd           = 0;
++      	mmap_info_.ofs          = 0;
++      	mmap_info_.rbytes       = 0;
++      	mmap_info_.zbytes       = 0;
++      	mmap_info_.self         = t_vme;
++      
++      	// 2. Initialize vm_entry members.
++      	init_vm_entry (
++        	t_vme,      // Target
++            	upage,      // upage (arg of load_segment)     
++            	writable,   // Permission
++            	&text_info_,
++            	&swap_info_,
++            	&mmap_info_,
++            	ELF
++          );
+ 
+-      text_info_.ofs += PGSIZE;
++      
++      	// 3. Insert a vm_entry
++      	if (!insert_vme ( &(thread_current ()->vm), t_vme))
++      	{
++      	  free (t_vme);
++      	  ASSERT (false); // Raise panic
++      	}
++
++      	/* Advance. */
++      	read_bytes -= page_read_bytes;
++      	zero_bytes -= page_zero_bytes;
++      	upage += PGSIZE;
++
++      	text_info_.ofs += PGSIZE;
++      }
+     }
+   return true;
+ }
+@@ -713,3 +738,14 @@ install_page (void *upage, void *kpage, bool writable)
+   return (pagedir_get_page (t->pagedir, upage) == NULL
+           && pagedir_set_page (t->pagedir, upage, kpage, writable));
+ }
++
++bool
++install_hpage (void *upage, void *kpage, bool writable)
++{
++  struct thread *t = thread_current ();
++
++  /* Verify that there's not already a page at that virtual
++     address, then map our page there. */
++  return (pagedir_get_hpage (t->pagedir, upage) == NULL
++          && pagedir_set_hpage (t->pagedir, upage, kpage, writable));
++}
+diff --git a/src/userprog/process.h b/src/userprog/process.h
+index 608756f..9ffc682 100755
+--- a/src/userprog/process.h
++++ b/src/userprog/process.h
+@@ -11,5 +11,6 @@ void process_activate (void);
+ // Added.
+ 
+ bool install_page (void *upage, void *kpage, bool writable);
++bool install_hpage (void *upage, void *kpage, bool writable);
+ 
+ #endif /* userprog/process.h */
+diff --git a/src/utils/pintos b/src/utils/pintos
+index 58635a9..f21846d 100755
+--- a/src/utils/pintos
++++ b/src/utils/pintos
+@@ -14,7 +14,7 @@ BEGIN { my $self = $0; $self =~ s%/+[^/]*$%%; require "$self/Pintos.pm"; }
+ our ($start_time) = time ();
+ our ($sim);			# Simulator: bochs, qemu, or player.
+ our ($debug) = "none";		# Debugger: none, monitor, or gdb.
+-our ($mem) = 4;			# Physical RAM in MB.
++our ($mem) = 128;			# Physical RAM in MB.
+ our ($serial) = 1;		# Use serial port for input and output?
+ our ($vga);			# VGA output: window, terminal, or none.
+ our ($jitter);			# Seed for random timer interrupts, if set.
+diff --git a/src/vm/Make.vars b/src/vm/Make.vars
+index e3c33a7..8a94587 100644
+--- a/src/vm/Make.vars
++++ b/src/vm/Make.vars
+@@ -2,6 +2,7 @@
+ 
+ kernel.bin: DEFINES = -DUSERPROG -DFILESYS -DVM
+ KERNEL_SUBDIRS = threads devices lib lib/kernel userprog filesys vm
+-TEST_SUBDIRS = tests/userprog tests/vm tests/filesys/base
++TEST_SUBDIRS = tests/vm
++#TEST_SUBDIRS = tests/userprog tests/vm tests/filesys/base
+ GRADING_FILE = $(SRCDIR)/tests/vm/Grading
+ SIMULATOR = --qemu
+diff --git a/src/vm/page.h b/src/vm/page.h
+index f0cf0cd..8d83740 100644
+--- a/src/vm/page.h
++++ b/src/vm/page.h
+@@ -4,7 +4,8 @@ enum PAGE_TYPE
+     ANONYMOUS   = 0x02, 
+     FILE_BACKED = 0x04,
+     ELF         = 0x08,
+-    MMAP        = 0xf0
++    MMAP        = 0x10,
++    HUGE_PAGE   = 0x20
+ };
+ 
+ 
+@@ -77,6 +78,7 @@ struct vm_entry
+     uint8_t *vaddr;             // upage, virtual address
+     uint8_t *paddr;             // Physical Address
+     bool writable;              // Write permission
++    bool hugepage;
+     
+     // For demand paging
+     struct text_info ti;
+diff --git a/src/vm/swap.c b/src/vm/swap.c
+index 6a2bdab..4c79b65 100644
+--- a/src/vm/swap.c
++++ b/src/vm/swap.c
+@@ -312,8 +312,6 @@ alloc_pframe (enum palloc_flags flags)
+     return kpage;
+ }
+ 
+-
+-
+ bool
+ access_less (const struct list_elem *a_, const struct list_elem *b_,
+             void *aux UNUSED) 

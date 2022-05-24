@@ -46,6 +46,7 @@ filesys_init (bool format)
 void
 filesys_done (void) 
 {
+  pdflush ();
   free_map_close ();
 }
 
