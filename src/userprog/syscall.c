@@ -60,7 +60,6 @@ syscall_handler (struct intr_frame *f)
   if(bad_ptr(usp,f)) return;                                   
                                                                
   uint32_t syscall_num = *((uint32_t*)usp);                    
-  //printf("System Call Number : %d\n",syscall_num);           
   switch (syscall_num)                                         
   {                                                            
   case SYS_HALT: // (void)                                     
@@ -83,6 +82,7 @@ syscall_handler (struct intr_frame *f)
       {                                                        
         f_temp = cur->fd_file[i];                              
         f->eax = file_length(f_temp);                          
+        // printf("[SYS_FILESIZE] fd : %d, return : %d\n",*fd, f->eax);
       }                                                        
     }                                                          
     lock_release(&filesys_lock);
@@ -97,6 +97,7 @@ syscall_handler (struct intr_frame *f)
       {                                                        
         f_temp = cur->fd_file[i];                              
         f->eax = file_tell(f_temp);                          
+        // printf("[SYS_TELL] fd : %d, return : %d\n",*fd, f->eax);
       }                                                        
     }                                                          
     lock_release(&filesys_lock);
@@ -115,9 +116,9 @@ syscall_handler (struct intr_frame *f)
     }                                               
     else 
     {                                        
-      //printf("filename : %s, size :%d\n",*file,*initial_size);
       lock_acquire(&filesys_lock);
       f->eax = filesys_create(*file, *initial_size);
+      // printf("[SYS_CREATE] filename : %s, size :%d, return : %d\n",*file,*initial_size,f->eax);
       lock_release(&filesys_lock);
     }      
     break;                                          
@@ -133,7 +134,6 @@ syscall_handler (struct intr_frame *f)
     }
     else
     {
-      //printf("filename : %s\n",*file);
       lock_acquire(&filesys_lock);
       f_temp = filesys_open(*file); 
       if(f_temp == NULL)
@@ -144,6 +144,7 @@ syscall_handler (struct intr_frame *f)
         cur->fd[cur->fd_pos] = f->eax;
         cur->fd_file[cur->fd_pos] = f_temp;
         cur->fd_pos += 1;
+        // printf("[SYS_OPEN] filename : %s, return : %d\n",*file,f->eax);
       }
       lock_release(&filesys_lock);
     }
@@ -162,6 +163,7 @@ syscall_handler (struct intr_frame *f)
         cur->fd_pos -= 1;
         cur->fd[i] = cur->fd[cur->fd_pos];
         cur->fd_file[i] = cur->fd_file[cur->fd_pos];
+        // printf("[SYS_CLOSE] fd : %d, return : %d\n", *fd, f->eax);
       }
     }
     lock_release(&filesys_lock);
@@ -196,6 +198,8 @@ syscall_handler (struct intr_frame *f)
             __exit(-1);
           else
             f->eax = file_write(cur->fd_file[i],*buffer,*size);
+          //printf("[SYS_WRITE] fd : %d, buffer : %p, size : %d, return : %d\n"
+	//		  , *fd, *buffer, *size, f->eax);
         }
       }
       lock_release(&filesys_lock);
@@ -271,6 +275,8 @@ syscall_handler (struct intr_frame *f)
           else
           {
             f->eax = file_read(cur->fd_file[i],*buffer,*size);
+            //printf("[SYS_READ] fd : %d, buffer : %p, size : %d, return : %d\n"
+	//		    , *fd, *buffer, *size, f->eax);
           }
         }
       }
@@ -303,6 +309,7 @@ syscall_handler (struct intr_frame *f)
         {                                                        
           //printf("Sucessfully match fd and file structure\n"); 
           file_seek(cur->fd_file[i],*position);                  
+          //printf("[SYS_SEEK] fd : %d, position : %d, return : %d\n",*fd, *position, f->eax);
           //printf("wanted : %d, real : %d\n",f->eax,*size);     
         }                                                        
       }                                                          
@@ -350,6 +357,7 @@ syscall_handler (struct intr_frame *f)
     name = usp + 20;
     lock_acquire(&filesys_lock);
     f->eax = readdir (*fd, *name);
+    //printf("[SYS_READDIR] fd : %d, name : %s, return : %d\n", *fd, *name, f->eax);
     lock_release(&filesys_lock);
     break;
   case SYS_ISDIR: /* (int fd) Tests if a fd represents a directory. */
@@ -357,6 +365,7 @@ syscall_handler (struct intr_frame *f)
     fd = usp + 4;
     lock_acquire(&filesys_lock);
     f->eax = isdir (*fd);
+    //printf("[SYS_ISDIR] fd : %d, return : %d\n", *fd, f->eax);
     lock_release(&filesys_lock);
     break;
   case SYS_INUMBER: /* (int fd) Returns the inode number for a fd. */
@@ -364,6 +373,7 @@ syscall_handler (struct intr_frame *f)
     fd = usp + 4;
     lock_acquire(&filesys_lock);
     f->eax = inumber (*fd);
+    //printf("[SYS_INUMBER] fd : %d, return : %d\n", *fd, f->eax);
     lock_release(&filesys_lock);
     break;
   }

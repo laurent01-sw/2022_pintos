@@ -577,10 +577,10 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 	   i_dblock = true, d_dblock = true;
   
       disk_inode = &inode->data;
-      if (new_sectors >= INDIRECT_BLOCK_ENTRIES)
+      if (new_sectors > INDIRECT_BLOCK_ENTRIES)
 	{
 	  //printf ("DI : old_sectors : %d, new_sectors : %d\n", old_sectors, new_sectors);
-          if (old_sectors < INDIRECT_BLOCK_ENTRIES)
+          if (old_sectors <= INDIRECT_BLOCK_ENTRIES)
 	    {
 	      //printf ("extend to double indirect pointer block capacity!\n");
 	      ASSERT (disk_inode->double_indirect_block_sec == 0)
@@ -593,9 +593,9 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 	  page_pos = (uint32_t *) b_head->b_start_page;
 
 	  /* Allocate Indirect Pointer Block Set */
-	  old_sector_pos = (old_sectors + 1 - INDIRECT_BLOCK_ENTRIES) == 0 ? 0:
-		  (old_sectors + 1 - INDIRECT_BLOCK_ENTRIES) / 128;
-	  new_sector_pos = (new_sectors + 1 - INDIRECT_BLOCK_ENTRIES) / 128;
+	  old_sector_pos = (old_sectors - INDIRECT_BLOCK_ENTRIES) == 0 ? 0:
+		  (old_sectors - INDIRECT_BLOCK_ENTRIES) / 128;
+	  new_sector_pos = (new_sectors - INDIRECT_BLOCK_ENTRIES) / 128;
 	  
 	  for (; old_sector_pos <= new_sector_pos; old_sector_pos++)
 	    {
@@ -609,45 +609,51 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 	          else 
 		    { 
 	              block_write (fs_device, *(page_pos + old_sector_pos), zeros);
-	        	//printf ("[DIPOINTER] os_pos : %d, ns_pos : %d, alloc_sector : %d\n"
-			//      ,old_sector_pos ,new_sector_pos 
-			 //     ,*(page_pos + old_sector_pos));
+	  //      	printf ("[DIPOINTER] upper_block : %d "
+	//				"os_pos : %d, ns_pos : %d, alloc_sector : %d\n"
+			    //,disk_inode->double_indirect_block_sec 
+			    //,old_sector_pos ,new_sector_pos 
+			    //,*(page_pos + old_sector_pos));
 		    }
 		}
 	    }
           b_head->b_state |= (1UL << BH_Dirty); 
 	  
 	  /* Fill Up Indirect Pointer Block Set */
-	  old_sector_pos = (old_sectors + 1 - INDIRECT_BLOCK_ENTRIES) == 0 ? 0:
-		  (old_sectors + 1 - INDIRECT_BLOCK_ENTRIES) / 128;
-	  new_sector_pos = (new_sectors + 1 - INDIRECT_BLOCK_ENTRIES) / 128;
+	  old_sector_pos = (old_sectors - INDIRECT_BLOCK_ENTRIES) == 0 ? 0:
+		  (old_sectors - INDIRECT_BLOCK_ENTRIES) / 128;
+	  new_sector_pos = (new_sectors - INDIRECT_BLOCK_ENTRIES) / 128;
 	  //printf ("[DIPOINTER] os_pos : %d, ns_pos : %d\n"
-		//	      ,old_sector_pos ,new_sector_pos);
+	//		      ,old_sector_pos ,new_sector_pos);
+	  i_old_sector_pos = old_sectors - old_sector_pos * 128 - INDIRECT_BLOCK_ENTRIES;
+	  i_new_sector_pos = new_sectors - new_sector_pos * 128 - INDIRECT_BLOCK_ENTRIES;
+	  sentinel = i_new_sector_pos > i_old_sector_pos ? i_new_sector_pos - i_old_sector_pos:
+		 	128; 
 	  for (;old_sector_pos <= new_sector_pos; old_sector_pos++)
 	    {
 	      ib_head = find_bcache_entry (*(page_pos + old_sector_pos));
 	      ipage_pos = (uint32_t *) ib_head->b_start_page;
-	      i_old_sector_pos = old_sectors + 1 - old_sector_pos * 128 - INDIRECT_BLOCK_ENTRIES;
-	      i_new_sector_pos = new_sectors + 1 - new_sector_pos * 128 - INDIRECT_BLOCK_ENTRIES;
-	               // printf ("[DIDATA] ios_pos : %d, ins_pos : %d\n"
-		       //         ,i_old_sector_pos, i_new_sector_pos); 
-	      if (i_old_sector_pos++ == -1)
-		i_new_sector_pos++;
-	      for (; i_old_sector_pos < i_new_sector_pos; i_old_sector_pos++)
+	      i_old_sector_pos = old_sectors - old_sector_pos * 128 - INDIRECT_BLOCK_ENTRIES;
+	      i_new_sector_pos = new_sectors - new_sector_pos * 128 - INDIRECT_BLOCK_ENTRIES;
+	      sentinel = i_new_sector_pos > i_old_sector_pos ? i_new_sector_pos: 128; 
+	      for (; i_old_sector_pos < sentinel; i_old_sector_pos++)
 		{
 		  if (!*(ipage_pos + i_old_sector_pos))
 		  {
 	      	    if (!free_map_allocate (1, ipage_pos + i_old_sector_pos))
 	              {
+			ASSERT (false);
 		        di_dblock = di_pblock = res_diblock = false;
 		        goto done;
 		      }
 	      	    else 
 		      {
 	                block_write (fs_device, *(ipage_pos + i_old_sector_pos), zeros);
-	                // printf ("[DIDATA] ios_pos : %d, ins_pos : %d, alloc_sector : %d\n"
-		         //       ,i_old_sector_pos, i_new_sector_pos 
-			  //      ,*(ipage_pos + i_old_sector_pos));
+	                //printf ("[DIDATA] upper_block : %d ios_pos : %d, ins_pos : %d"
+			//		" alloc_sector : %d\n"
+			//	,*(page_pos + old_sector_pos)
+		          //      ,i_old_sector_pos, i_new_sector_pos 
+			    //    ,*(ipage_pos + i_old_sector_pos));
 		      }
 		  }
 		}
@@ -655,9 +661,9 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 	    }
 	}
 
-      if (new_sectors > DIRECT_BLOCK_ENTRIES && old_sectors < INDIRECT_BLOCK_ENTRIES - 1)
+      if (new_sectors > DIRECT_BLOCK_ENTRIES && old_sectors < INDIRECT_BLOCK_ENTRIES)
 	{
-	  // printf ("SI : old_sectors : %d, new_sectors : %d\n", old_sectors, new_sectors);
+	  //printf ("SI : old_sectors : %d, new_sectors : %d\n", old_sectors, new_sectors);
 	  if (old_sectors <= DIRECT_BLOCK_ENTRIES)
 	    {
 	      ASSERT (disk_inode->indirect_block_sec == 0)
@@ -682,16 +688,18 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 		  i_dblock = i_pblock = di_dblock = di_pblock = res_diblock = false;
 		  goto done;
 		}
-	      else
+	      else {
 		block_write (fs_device, *(page_pos + d_icount), zeros);
-	      // printf ("d_icount : %d, sentinel : %d, alloc_sector : %d\n", d_icount, 
-		//	      sentinel
-		//	      ,*(page_pos + d_icount));
+	     //   printf ("d_icount : %d, sentinel : %d, alloc_sector : %d\n", d_icount, 
+	//		      sentinel
+	//		      ,*(page_pos + d_icount));
+	      }
 	    }
           b_head->b_state |= (1UL << BH_Dirty); 
 	}
       if (old_sectors < DIRECT_BLOCK_ENTRIES)
 	{
+	  //printf ("DD : old_sectors : %d, new_sectors : %d\n", old_sectors, new_sectors);
 	  sentinel = new_sectors > DIRECT_BLOCK_ENTRIES ? 
 		  DIRECT_BLOCK_ENTRIES : new_sectors;
           for (d_dcount = old_sectors; d_dcount < sentinel; d_dcount++)
@@ -701,8 +709,12 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 		  d_dblock = i_dblock = i_pblock = di_dblock = di_pblock = res_diblock = false;
 		  goto done;
 		}
-	      else
+	      else {
 		block_write (fs_device, disk_inode->direct_map_table[d_dcount], zeros);
+	    //    printf ("d_dcount : %d, sentinel : %d, alloc_sector : %d\n", d_dcount, 
+	//		      sentinel
+	//		      ,disk_inode->direct_map_table[d_dcount]);
+	      }
 	    }
 	}
         done: /* Reclaim Allocated Blocks at the failure case */
@@ -779,6 +791,7 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
     {
       /* Sector to write, starting byte offset within sector. */
       block_sector_t sector_idx = byte_to_sector (inode, offset);
+      //if (sector_idx < 2 || sector_idx > 5)printf ("(%s) sector : %d\n", __func__, sector_idx);
       int sector_ofs = offset % BLOCK_SECTOR_SIZE;
 
       /* Bytes left in inode, bytes left in sector, lesser of the two. */
