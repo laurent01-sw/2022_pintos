@@ -87,6 +87,20 @@ syscall_handler (struct intr_frame *f)
     }                                                          
     lock_release(&filesys_lock);
     break;                                                     
+  case SYS_TELL: // (int fd)                               
+    if(bad_ptr(usp + 4, f)) break;                          
+    lock_acquire(&filesys_lock);
+    fd = usp + 4;                                              
+    for(i = 0; i < cur->fd_pos; i++)                           
+    {                                                          
+      if(cur->fd[i] == *fd)                                    
+      {                                                        
+        f_temp = cur->fd_file[i];                              
+        f->eax = file_tell(f_temp);                          
+      }                                                        
+    }                                                          
+    lock_release(&filesys_lock);
+    break;                                                     
   case SYS_CREATE: // (const char* file, unsigned initial_size)
     if(bad_ptr(usp + 16, f)) break;                            
     if(bad_ptr(usp + 20, f)) break;                            
