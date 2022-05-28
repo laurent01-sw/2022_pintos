@@ -22,6 +22,7 @@
 #include "threads/vaddr.h"
 
 extern struct lock filesys_lock;
+extern struct thread *initial_thread;
 static thread_func start_process NO_RETURN;
 static bool load (const char *cmdline, void (**eip) (void), void **esp);
 
@@ -53,6 +54,11 @@ process_execute (const char *file_name)
   if (tid == TID_ERROR)
     palloc_free_page (fn_copy); 
   thread_current()->ctid = tid;
+  lock_acquire (&filesys_lock);
+  if (!thread_current ()->current_dir && thread_current () == initial_thread)
+    thread_current ()->current_dir = dir_open_root ();
+  thread_wait (tid)->current_dir = dir_reopen(thread_current ()->current_dir);
+  lock_release (&filesys_lock);
   return tid;
 }
 

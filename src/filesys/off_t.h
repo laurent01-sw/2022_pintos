@@ -2,6 +2,7 @@
 #define FILESYS_OFF_T_H
 
 #include <stdint.h>
+#include <stdbool.h>
 
 /* An offset within a file.
    This is a separate header because multiple headers want this

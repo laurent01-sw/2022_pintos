@@ -1,438 +1,1057 @@
 diff --git a/src/cscope.in.out b/src/cscope.in.out
-index 1e931cd..8c7adbd 100644
+index 11050f7..06d9cb0 100644
 Binary files a/src/cscope.in.out and b/src/cscope.in.out differ
 diff --git a/src/cscope.po.out b/src/cscope.po.out
-index 0e6867d..ebdb57b 100644
+index fa11f50..3e7a97d 100644
 Binary files a/src/cscope.po.out and b/src/cscope.po.out differ
+diff --git a/src/filesys/.inode.c.swo b/src/filesys/.inode.c.swo
+deleted file mode 100644
+index bb14da5..0000000
+Binary files a/src/filesys/.inode.c.swo and /dev/null differ
+diff --git a/src/filesys/.inode.c.swp b/src/filesys/.inode.c.swp
+index f73f83e..a883c37 100644
+Binary files a/src/filesys/.inode.c.swp and b/src/filesys/.inode.c.swp differ
+diff --git a/src/filesys/directory.c b/src/filesys/directory.c
+index 030c1c9..532215b 100644
+--- a/src/filesys/directory.c
++++ b/src/filesys/directory.c
+@@ -5,6 +5,7 @@
+ #include "filesys/filesys.h"
+ #include "filesys/inode.h"
+ #include "threads/malloc.h"
++#include "filesys/free-map.h"
+ 
+ /* A directory. */
+ struct dir 
+@@ -14,19 +15,19 @@ struct dir
+   };
+ 
+ /* A single directory entry. */
+-struct dir_entry 
+-  {
+-    block_sector_t inode_sector;        /* Sector number of header. */
+-    char name[NAME_MAX + 1];            /* Null terminated file name. */
+-    bool in_use;                        /* In use or free? */
+-  };
++//struct dir_entry 
++//  {
++//    block_sector_t inode_sector;        /* Sector number of header. */
++//    char name[NAME_MAX + 1];            /* Null terminated file name. */
++//    bool in_use;                        /* In use or free? */
++//  };
+ 
+ /* Creates a directory with space for ENTRY_CNT entries in the
+    given SECTOR.  Returns true if successful, false on failure. */
+ bool
+ dir_create (block_sector_t sector, size_t entry_cnt)
+ {
+-  return inode_create (sector, entry_cnt * sizeof (struct dir_entry));
++  return inode_create (sector, entry_cnt * sizeof (struct dir_entry), true);
+ }
+ 
+ /* Opens and returns the directory for the given INODE, of which
+@@ -100,6 +101,9 @@ lookup (const struct dir *dir, const char *name,
+ 
+   for (ofs = 0; inode_read_at (dir->inode, &e, sizeof e, ofs) == sizeof e;
+        ofs += sizeof e) 
++    {
++      // printf ("(%s) sector : %d, name : %s, in_use %d\n"
++	//	      ,__func__ ,e.inode_sector, e.name, e.in_use);
+     if (e.in_use && !strcmp (name, e.name)) 
+       {
+         if (ep != NULL)
+@@ -108,6 +112,7 @@ lookup (const struct dir *dir, const char *name,
+           *ofsp = ofs;
+         return true;
+       }
++    }
+   return false;
+ }
+ 
+@@ -124,6 +129,7 @@ dir_lookup (const struct dir *dir, const char *name,
+   ASSERT (dir != NULL);
+   ASSERT (name != NULL);
+ 
++  // printf ("(%s) dir : %p, name : %s\n" ,__func__, dir, name);
+   if (lookup (dir, name, &e, NULL))
+     *inode = inode_open (e.inode_sector);
+   else
+@@ -173,6 +179,8 @@ dir_add (struct dir *dir, const char *name, block_sector_t inode_sector)
+   strlcpy (e.name, name, sizeof e.name);
+   e.inode_sector = inode_sector;
+   success = inode_write_at (dir->inode, &e, sizeof e, ofs) == sizeof e;
++  // printf ("(%s) sector : %d, name : %s, in_use : %d\n"
++	//	  ,__func__, e.inode_sector, e.name, e.in_use);
+ 
+  done:
+   return success;
+@@ -234,3 +242,64 @@ dir_readdir (struct dir *dir, char name[NAME_MAX + 1])
+     }
+   return false;
+ }
++
++struct dir *
++find_end_dir (const char *name, char **filename, bool create) 
++{
++  /* Parse the path, need to implement relative path function */     
++  struct dir *dir = dir_open_root (), *next_dir;
++  struct inode *inode = NULL;
++  block_sector_t inode_sector = 0;
++  char *s = name;                                                    
++  char *token, *save_ptr;                                            
++  uint32_t depth = 0, i = 0;                                         
++                                                                   
++  const char *p = name;
++  if (*p != '/') depth++;  
++  for (p = name; *p != '\0'; p++)                                    
++    if (*p == '/') depth++;                                          
++                                                                   
++  char *parsed_dir [depth];                                          
++  for (token = strtok_r (s, "/", &save_ptr); token != NULL;          
++      token = strtok_r (NULL, "/", &save_ptr))                     
++    {                                                                
++      parsed_dir[i++] = token;                                       
++      // printf ("%d : %s\n", i, parsed_dir[i - 1]);                    
++      dir_lookup (dir, token, &inode);                               
++      
++      if (!inode)
++	{ 
++	  if (create && i == depth)
++	    {
++	      free_map_allocate (1, &inode_sector);
++	      dir_create (inode_sector, 16);
++	      inode = inode_open (inode_sector);
++	      return dir_open (inode);
++	    }
++	  else
++	    {
++	      *filename = token;
++	      // printf ("filename : %s\n", *filename);
++	      return dir;
++	    }
++	}
++
++      if (inode_isdir(inode))                                         
++        {                                                            
++          next_dir = dir_open (inode);                                    
++	  dir_close (dir);
++	  dir = next_dir;
++        }                                                            
++      else /* Check whether regular File is in the middle */         
++        {                                                            
++          if (i != depth)                                            
++            {                                                        
++              printf ("(%s) Regular File in the middle of the path!\n",__func__);
++	      return NULL;
++            }                                                        
++	  else
++	    *filename = token;
++        }                                                            
++    }                                                                
++  return dir;
++}
+diff --git a/src/filesys/directory.h b/src/filesys/directory.h
+index 930acf9..6591860 100644
+--- a/src/filesys/directory.h
++++ b/src/filesys/directory.h
+@@ -13,6 +13,14 @@
+ 
+ struct inode;
+ 
++/* A single directory entry. */
++struct dir_entry 
++  {
++    block_sector_t inode_sector;        /* Sector number of header. */
++    char name[NAME_MAX + 1];            /* Null terminated file name. */
++    bool in_use;                        /* In use or free? */
++  };
++
+ /* Opening and closing directories. */
+ bool dir_create (block_sector_t sector, size_t entry_cnt);
+ struct dir *dir_open (struct inode *);
+@@ -27,4 +35,5 @@ bool dir_add (struct dir *, const char *name, block_sector_t);
+ bool dir_remove (struct dir *, const char *name);
+ bool dir_readdir (struct dir *, char name[NAME_MAX + 1]);
+ 
++struct dir * find_end_dir (const char *name, char **filename, bool create); 
+ #endif /* filesys/directory.h */
+diff --git a/src/filesys/file.c b/src/filesys/file.c
+index b17de81..6b626e0 100644
+--- a/src/filesys/file.c
++++ b/src/filesys/file.c
+@@ -5,12 +5,12 @@
+ #include "threads/malloc.h"
+ 
+ /* An open file. */
+-struct file 
+-  {
+-    struct inode *inode;        /* File's inode. */
+-    off_t pos;                  /* Current position. */
+-    bool deny_write;            /* Has file_deny_write() been called? */
+-  };
++//struct file 
++//  {
++//    struct inode *inode;        /* File's inode. */
++//    off_t pos;                  /* Current position. */
++//    bool deny_write;            /* Has file_deny_write() been called? */
++//  };
+ 
+ /* Opens a file for the given INODE, of which it takes ownership,
+    and returns the new file.  Returns a null pointer if an
+diff --git a/src/filesys/file.h b/src/filesys/file.h
+index a33c5af..4aaf4b0 100644
+--- a/src/filesys/file.h
++++ b/src/filesys/file.h
+@@ -5,6 +5,14 @@
+ 
+ struct inode;
+ 
++/* An open file. */
++struct file 
++  {
++    struct inode *inode;        /* File's inode. */
++    off_t pos;                  /* Current position. */
++    bool deny_write;            /* Has file_deny_write() been called? */
++  };
++
+ /* Opening and closing files. */
+ struct file *file_open (struct inode *);
+ struct file *file_reopen (struct file *);
+diff --git a/src/filesys/filesys.c b/src/filesys/filesys.c
+index 72ad445..5f9addb 100644
+--- a/src/filesys/filesys.c
++++ b/src/filesys/filesys.c
+@@ -10,6 +10,7 @@
+ #include "threads/palloc.h"
+ #include "threads/malloc.h"
+ #include "threads/synch.h"
++#include "threads/thread.h"
+ 
+ /* Partition that contains the file system. */
+ struct block *fs_device;
+@@ -58,13 +59,18 @@ bool
+ filesys_create (const char *name, off_t initial_size) 
+ {
+   block_sector_t inode_sector = 0;
+-  struct dir *dir = dir_open_root ();
+-  bool success = (dir != NULL
++  struct dir *dir = NULL;
++  char *filename = NULL;
++
++  dir = find_end_dir (name, &filename, false);
++  
++  bool success = (dir != NULL && filename != NULL
+                   && free_map_allocate (1, &inode_sector)
+-                  && inode_create (inode_sector, initial_size)
+-                  && dir_add (dir, name, inode_sector));
++                  && inode_create (inode_sector, initial_size, false)
++                  && dir_add (dir, filename, inode_sector));
+   if (!success && inode_sector != 0) 
+     free_map_release (inode_sector, 1);
++
+   dir_close (dir);
+ 
+   return success;
+@@ -78,11 +84,17 @@ filesys_create (const char *name, off_t initial_size)
+ struct file *
+ filesys_open (const char *name)
+ {
+-  struct dir *dir = dir_open_root ();
++  struct dir *dir = NULL;
++  char *filename = NULL;
+   struct inode *inode = NULL;
+ 
++  dir = find_end_dir (name, &filename, false);
++
++  //printf ("(%s) tid : %d, dir : %p, filename : %s\n", __func__, 
++  //		  thread_current ()->tid, dir, filename);
++  
+   if (dir != NULL)
+-    dir_lookup (dir, name, &inode);
++    dir_lookup (dir, filename, &inode);
+   dir_close (dir);
+ 
+   return file_open (inode);
+@@ -95,7 +107,12 @@ filesys_open (const char *name)
+ bool
+ filesys_remove (const char *name) 
+ {
+-  struct dir *dir = dir_open_root ();
++  struct dir *dir = NULL;
++  struct inode *inode = NULL;
++  char *filename = NULL;
++
++  dir = find_end_dir (name, &filename, false);
++  
+   bool success = dir != NULL && dir_remove (dir, name);
+   dir_close (dir); 
+ 
+diff --git a/src/filesys/free-map.c b/src/filesys/free-map.c
+index 29ea4df..04650a9 100644
+--- a/src/filesys/free-map.c
++++ b/src/filesys/free-map.c
+@@ -73,7 +73,7 @@ void
+ free_map_create (void) 
+ {
+   /* Create inode. */
+-  if (!inode_create (FREE_MAP_SECTOR, bitmap_file_size (free_map)))
++  if (!inode_create (FREE_MAP_SECTOR, bitmap_file_size (free_map), false))
+     PANIC ("free map creation failed");
+ 
+   /* Write bitmap to file. */
 diff --git a/src/filesys/inode.c b/src/filesys/inode.c
-index 67d3eeb..7138430 100644
+index e2082ac..66d8158 100644
 --- a/src/filesys/inode.c
 +++ b/src/filesys/inode.c
-@@ -11,15 +11,20 @@
+@@ -11,7 +11,7 @@
  
  /* Identifies an inode. */
  #define INODE_MAGIC 0x494e4f44
-+#define DIRECT_BLOCK_ENTRIES 124
-+#define INDIRECT_BLOCK_ENTRIES DIRECT_BLOCK_ENTRIES + 128
-+#define DINDIRECT_BLOCK_ENTRIES INDIRECT_BLOCK_ENTRIES + 128 * 128
+-#define DIRECT_BLOCK_ENTRIES 124
++#define DIRECT_BLOCK_ENTRIES 123
+ #define INDIRECT_BLOCK_ENTRIES DIRECT_BLOCK_ENTRIES + 128
+ #define DINDIRECT_BLOCK_ENTRIES INDIRECT_BLOCK_ENTRIES + 128 * 128
  
- /* On-disk inode.
-    Must be exactly BLOCK_SECTOR_SIZE bytes long. */
- struct inode_disk
+@@ -21,6 +21,7 @@ struct inode_disk
    {
--    block_sector_t start;               /* First data sector. */
      off_t length;                       /* File size in bytes. */
      unsigned magic;                     /* Magic number. */
--    uint32_t unused[125];               /* Not used. */
-+    /* Extensible File Support */
-+    block_sector_t direct_map_table[DIRECT_BLOCK_ENTRIES];
-+    block_sector_t indirect_block_sec;
-+    block_sector_t double_indirect_block_sec;
-   };
- 
- /* Returns the number of sectors to allocate for an inode SIZE
-@@ -53,11 +58,54 @@ static int active_b_count; /* Count How many buffer cache entry is used curretly
- static block_sector_t
- byte_to_sector (const struct inode *inode, off_t pos) 
- {
-+  struct buffer_head *b_head = NULL;
-+  block_sector_t sector_pos;
-+  uint32_t *page_pos = NULL;
-+
-   ASSERT (inode != NULL);
-+
-+  sector_pos = pos / BLOCK_SECTOR_SIZE;
-+  
-   if (pos < inode->data.length)
--    return inode->data.start + pos / BLOCK_SECTOR_SIZE;
-+    {
-+      if (sector_pos < DIRECT_BLOCK_ENTRIES)
-+	// Read from Direct Pointer 
-+        {
-+	   return inode->data.direct_map_table[sector_pos];
-+	}
-+      else if (sector_pos < INDIRECT_BLOCK_ENTRIES)
-+	// Read from Single Indirect Pointer 
-+	{
-+	  // Read Indirect Pointer Block 
-+	  sector_pos -= DIRECT_BLOCK_ENTRIES;
-+	  b_head = find_bcache_entry (inode->data.indirect_block_sec);	
-+	  page_pos = (uint32_t *) b_head->b_start_page;
-+	  page_pos = page_pos + sector_pos;
-+	  return *page_pos;
-+	}
-+      else if (sector_pos < DINDIRECT_BLOCK_ENTRIES)
-+	// Read from Double Indirect Pointer 
-+	{
-+	  // Read Double Indirect Pointer Block
-+	  sector_pos -= INDIRECT_BLOCK_ENTRIES;
-+	  b_head = find_bcache_entry (inode->data.double_indirect_block_sec);
-+	  page_pos = (uint32_t *) b_head->b_start_page;
-+	  page_pos = page_pos + (sector_pos / 128);
-+	  // Read Indirect Pointer Block
-+	  b_head = find_bcache_entry (*page_pos);
-+	  page_pos = (uint32_t *) b_head->b_start_page;
-+	  page_pos = page_pos + (sector_pos % 128);
-+	  return *page_pos;
-+	}
-+      else
-+        {
-+	  ASSERT(false);
-+	}
-+      // return inode->data.start + pos / BLOCK_SECTOR_SIZE;
-+    }
-   else
-     return -1;
-+  
- }
- 
- /* List of open inodes, so that opening a single inode twice
-@@ -76,11 +124,16 @@ inode_init (void)
-    device.
-    Returns true if successful.
++    unsigned isdir;
+     /* Extensible File Support */
+     block_sector_t direct_map_table[DIRECT_BLOCK_ENTRIES];
+     block_sector_t indirect_block_sec;
+@@ -126,7 +127,7 @@ inode_init (void)
     Returns false if memory or disk allocation fails. */
-+/* Extensible File Support */
+ /* Extensible File Support */
  bool
- inode_create (block_sector_t sector, off_t length)
+-inode_create (block_sector_t sector, off_t length)
++inode_create (block_sector_t sector, off_t length, bool isdir)
  {
    struct inode_disk *disk_inode = NULL;
--  bool success = false;
-+  bool i_pblock = true, di_pblock = true, d_block = true, i_block = true, di_block = true;
-+  uint32_t *page_pos, *ipage_pos, p_count, f_count, s_count = 0, i, j;
-+  block_sector_t sector_len, d_sector_num;
-+  struct buffer_head *b_head, *ib_head;
-+  static char zeros [BLOCK_SECTOR_SIZE];
- 
-   ASSERT (length >= 0);
- 
-@@ -94,22 +147,159 @@ inode_create (block_sector_t sector, off_t length)
-       size_t sectors = bytes_to_sectors (length);
-       disk_inode->length = length;
-       disk_inode->magic = INODE_MAGIC;
--      if (free_map_allocate (sectors, &disk_inode->start)) 
-+      
-+      sector_len = length / BLOCK_SECTOR_SIZE;
-+      
-+      /* Panic if Out of Maximum File Size*/
-+      ASSERT (sector_len <= DINDIRECT_BLOCK_ENTRIES)
-+
-+      /* initialize pointer block */
-+      if (sector_len > DIRECT_BLOCK_ENTRIES)
-+        {
-+	  if (!free_map_allocate (1, &disk_inode->indirect_block_sec))
-+	    goto done;
-+	  else
-+	    block_write (fs_device, disk_inode->indirect_block_sec, zeros);
-+	}
-+      if (sector_len > INDIRECT_BLOCK_ENTRIES)
-         {
--          block_write (fs_device, sector, disk_inode);
--          if (sectors > 0) 
-+	  if (!free_map_allocate (1, &disk_inode->double_indirect_block_sec))
-+	    {
-+	      i_pblock = false;
-+	      goto done; /* Clean inode indirect Block */
-+	    }
-+	  else
-+	    block_write(fs_device, disk_inode->double_indirect_block_sec, zeros);
-+
-+	  d_sector_num = sector_len - INDIRECT_BLOCK_ENTRIES;
-+	  b_head = find_bcache_entry (disk_inode->double_indirect_block_sec);
-+	  page_pos = (uint32_t *) b_head->b_start_page;
-+	  for (p_count = 0; p_count < DIV_ROUND_UP(d_sector_num, 128); p_count++)
-+	    {
-+	      free_map_allocate (1, page_pos + p_count);
-+	      block_write (fs_device, *(page_pos + p_count), zeros);
-+	    }
-+	  if (p_count != DIV_ROUND_UP(d_sector_num, 128)) 
-+	    /* Fail to allocate whole dindirect block set */
-+	    {
-+	      di_pblock = i_pblock = false;
-+	      goto done;
-+	    }
-+	}
-+
-+      b_head = ib_head = NULL;
-+      while (sectors > 0)
+   bool i_pblock = true, di_pblock = true, d_block = true, i_block = true, di_block = true;
+@@ -306,7 +307,11 @@ done:
+ 	}
+       if (i_pblock && di_pblock && d_block && i_block && di_block)
+ 		/* Write inode to the disk */
+-	block_write (fs_device, sector, disk_inode);
 +	{
-+          if (s_count < DIRECT_BLOCK_ENTRIES)
-+	      // Store to Direct Pointer 
-             {
--              static char zeros[BLOCK_SECTOR_SIZE];
--              size_t i;
--              
--              for (i = 0; i < sectors; i++) 
--                block_write (fs_device, disk_inode->start + i, zeros);
--            }
--          success = true; 
--        } 
-+	      if (!free_map_allocate (1, &disk_inode->direct_map_table[s_count]))
-+	        {
-+		  d_block = di_pblock = i_pblock = false;
-+	          break;
-+		}
-+	      else
-+	        block_write(fs_device, disk_inode->direct_map_table[s_count], zeros);
-+	    }
-+          else if (s_count < INDIRECT_BLOCK_ENTRIES)
-+	      // Store to Single Indirect Pointer 
-+	    { 
-+	      // Read Indirect Pointer Block 
-+	      if (!b_head)
-+	      { 
-+	        b_head = find_bcache_entry (disk_inode->indirect_block_sec);	
-+	        page_pos = (uint32_t *) b_head->b_start_page;
-+	      }
-+
-+	      if (!free_map_allocate (1, page_pos + (s_count - DIRECT_BLOCK_ENTRIES)))
-+	        {
-+		  i_block = d_block = di_pblock = i_pblock = false;
-+	          break;
-+		}
-+	      else
-+	        block_write(fs_device, *(page_pos + s_count - DIRECT_BLOCK_ENTRIES), zeros);
-+
-+	      if (s_count == INDIRECT_BLOCK_ENTRIES - 1)
-+	        b_head = NULL;
-+	    }
-+          else if (s_count < DINDIRECT_BLOCK_ENTRIES)
-+	      // Read from Double Indirect Pointer 
-+	    {
-+	      // Read Double Indirect Pointer Block
-+	      if (!b_head)
-+	        {
-+		  b_head = find_bcache_entry (disk_inode->double_indirect_block_sec);
-+	          page_pos = (uint32_t *) b_head->b_start_page;
-+		}
-+	      // Read Indirect Pointer Block
-+	      if (!ib_head)
-+	        {
-+		  ib_head = find_bcache_entry (*(page_pos 
-+					  + (s_count - INDIRECT_BLOCK_ENTRIES)/ 128));
-+	          ipage_pos = (uint32_t *) ib_head->b_start_page;
-+	      	  ipage_pos = ipage_pos + (s_count - INDIRECT_BLOCK_ENTRIES) % 128;
-+		}
-+	      ib_head = s_count - INDIRECT_BLOCK_ENTRIES % 128 == 127 ? NULL : ib_head;
-+	      
-+	      if (!free_map_allocate (1, ipage_pos + (s_count - DIRECT_BLOCK_ENTRIES)))
-+	        {
-+		  di_block = i_block = d_block = di_pblock = i_pblock = false;
-+	          break;
-+		}
-+	      else
-+	        block_write(fs_device, *(ipage_pos + s_count - DIRECT_BLOCK_ENTRIES), zeros);
-+	    }
-+          else
-+            {
-+	      ASSERT(false);
-+	    }
-+	  sectors--; s_count++;
++	  if (isdir)
++	    disk_inode->isdir = 1;
++	  block_write (fs_device, sector, disk_inode);
 +	}
-+done:
-+      if (!di_block) /* Clean Data Block Pointed by Dindirect Pointer Block */
-+	{
-+	  b_head = find_bcache_entry (disk_inode->double_indirect_block_sec);
-+	  page_pos = (uint32_t *) b_head->b_start_page;
-+	  for (i = 0; *(page_pos + i) != 0; j++)
-+	    {
-+	      ib_head = find_bcache_entry (*(page_pos + i));
-+	      ipage_pos = (uint32_t *) b_head->b_start_page;
-+	      for (j = 0; *(ipage_pos + j) != 0 ; j++)	
-+		free_map_release (*(ipage_pos + j), 1);	
-+	    }
-+	}
-+      if (!i_block) /* Clean Data Block Pointed by Indirect Pointer Block */
-+	{
-+	  b_head = find_bcache_entry (disk_inode->indirect_block_sec);
-+	  page_pos = (uint32_t *) b_head->b_start_page;
-+	  for (i = 0; i < INDIRECT_BLOCK_ENTRIES && *(page_pos + i) != 0; i++)
-+	    free_map_release (*(page_pos + i), 1);
-+	}
-+      if (!d_block) /* Clean Data Block Pointed by Inode Block */
-+	{
-+	  for (i = 0; i < DIRECT_BLOCK_ENTRIES && disk_inode->direct_map_table[i] != 0; i++)
-+	    free_map_release (disk_inode->direct_map_table[i], 1);
-+	}
-+      if (!di_pblock) /* Clean Dindirect Pointer Block */
-+        {
-+	  b_head = find_bcache_entry (disk_inode->double_indirect_block_sec);
-+	  page_pos = (uint32_t *) b_head->b_start_page;
-+	  for (f_count = 0; f_count <= p_count; f_count++)
-+	    free_map_release (1, *(page_pos + f_count));
-+	  memset(b_head->b_start_page, 0, 512);
-+	  block_write (fs_device, b_head->b_blocknr, b_head->b_start_page);
-+	  b_head->b_state = 0;
-+	  b_head->b_blocknr = 0;
-+	  free_map_release (disk_inode->double_indirect_block_sec, 1);
-+	}
-+      if (!i_pblock) /* Clean Indirect Pointer Block */
-+        free_map_release (disk_inode->indirect_block_sec, 1);
-+      if (i_pblock && di_pblock && d_block && i_block && di_block)
-+		/* Write inode to the disk */
-+	block_write (fs_device, sector, disk_inode);
        free (disk_inode);
      }
--  return success;
-+  return i_pblock && di_pblock && d_block && i_block && di_block;
+   return i_pblock && di_pblock && d_block && i_block && di_block;
+@@ -345,6 +350,9 @@ inode_open (block_sector_t sector)
+   inode->deny_write_cnt = 0;
+   inode->removed = false;
+   block_read (fs_device, inode->sector, &inode->data);
++  printf ("(%s) length : %d, isdir : %d, direct_map_table[0] :%d\n",
++		__func__, inode->data.length, inode->data.isdir
++		,inode->data.direct_map_table[0]);
+   return inode;
  }
  
- /* Reads an inode from SECTOR
-@@ -170,6 +360,10 @@ inode_get_inumber (const struct inode *inode)
- void
- inode_close (struct inode *inode) 
+@@ -354,6 +362,9 @@ inode_reopen (struct inode *inode)
  {
-+  uint32_t i, j;
-+  struct buffer_head *b_head, *ib_head;
-+  struct inode_disk *disk_inode = NULL;
-+  uint32_t *page_pos = NULL, *ipage_pos = NULL;
-   /* Ignore null pointer. */
-   if (inode == NULL)
-     return;
-@@ -183,9 +377,36 @@ inode_close (struct inode *inode)
+   if (inode != NULL)
+     inode->open_cnt++;
++  printf ("(%s) length : %d, isdir : %d, direct_map_table[0] :%d\n",
++		__func__, inode->data.length, inode->data.isdir
++		,inode->data.direct_map_table[0]);
+   return inode;
+ }
+ 
+@@ -364,6 +375,19 @@ inode_get_inumber (const struct inode *inode)
+   return inode->sector;
+ }
+ 
++bool
++inode_isdir (const struct inode *inode)
++{
++  return inode->data.isdir;
++}
++
++void
++inode_setdir (struct inode *inode)
++{
++  inode->data.isdir = 1;
++  block_write (fs_device, inode->sector, &inode->data);
++}
++
+ /* Closes INODE and writes it to disk.
+    If this was the last reference to INODE, frees its memory.
+    If INODE was also a removed inode, frees its blocks. */
+@@ -383,10 +407,14 @@ inode_close (struct inode *inode)
+     {
+       /* Remove from inode list and release lock. */
+       list_remove (&inode->elem);
++  	printf ("(%s) length : %d, isdir : %d, direct_map_table[0] :%d\n",
++		__func__, inode->data.length, inode->data.isdir
++		,inode->data.direct_map_table[0]);
+  
        /* Deallocate blocks if removed. */
        if (inode->removed) 
          {
-+	  /* Free Disk Inode */
++	  printf ("(%s) removed\n" ,__func__);
+ 	  /* Free Disk Inode */
            free_map_release (inode->sector, 1);
--          free_map_release (inode->data.start,
--                            bytes_to_sectors (inode->data.length)); 
-+	  /* Free Data Blocks */
-+	  disk_inode = &inode->data;
-+	  if (disk_inode->double_indirect_block_sec)
-+	  /* Free Dindirect Block Set and its Pointer blocks*/
-+	    {
-+	      b_head = find_bcache_entry (disk_inode->double_indirect_block_sec);
-+	      page_pos = (uint32_t *) b_head->b_start_page;                      
-+	      for (i = 0; *(page_pos + i) != 0; j++)                          
-+  	        {                                                                
-+    		  ib_head = find_bcache_entry (*(page_pos + i));                 
-+    		  ipage_pos = (uint32_t *) b_head->b_start_page;                 
-+    		  for (j = 0; *(ipage_pos + j) != 0; j++)              
-+      		    free_map_release (*(ipage_pos + j), 1); 
-+  		} 
-+	    }
-+	  if (disk_inode->indirect_block_sec)
-+	  /* Free Indirect Block Set and its Pointer blocks*/
-+	    {
-+	      b_head = find_bcache_entry (disk_inode->indirect_block_sec);
-+	      page_pos = (uint32_t *) b_head->b_start_page;
-+	      for (i = 0; i < INDIRECT_BLOCK_ENTRIES && *(page_pos + i) != 0; i++)
-+      		free_map_release (*(page_pos + i), 1);
-+	    }
-+	  if (disk_inode->direct_map_table[0])
-+	  /* Free Direct Block Set */
-+	      for (i = 0; i < DIRECT_BLOCK_ENTRIES 
-+		&& disk_inode->direct_map_table[i] != 0; i++)
-+      		free_map_release (disk_inode->direct_map_table[i], 1);
-         }
+ 	  /* Free Data Blocks */
+@@ -452,6 +480,7 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
+     {
+       /* Disk sector to read, starting byte offset within sector. */
+       block_sector_t sector_idx = byte_to_sector (inode, offset);
++      // printf ("(%s) sector_idx : %d\n",__func__, sector_idx);
+       int sector_ofs = offset % BLOCK_SECTOR_SIZE;
  
-       free (inode); 
-@@ -228,24 +449,10 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
-       if (chunk_size <= 0)
-         break;
-       /* Find Buffer Cache Entry on the list */
--      b_head = sector_to_bhead (sector_idx, false);
--      if (!b_head) /* Block is not on Buffer Cache */
--        {
--	  if (active_b_count == BH_ENTRY) /* Need to evict LRU Buffer Cache Entry */	    
--	    b_head = evict_bcache_entry();
--	  else /* Find Free Buffer Cache Entry */
--	    b_head = sector_to_bhead (0, true);
--	  /* Initialize Free Buffer Cache Entry */
--	  ASSERT (b_head != NULL)
--    	  b_head->b_state |= (1UL << BH_Used); 
--	  b_head->b_blocknr = sector_idx;
--	  block_read (fs_device, sector_idx, b_head->b_start_page);
--	  active_b_count++;
--        }
--      /* Add Buffer Cache Entry to the LRU List */
--      list_push_back (&bh_list, &b_head->elem);
--      //printf("(%s) sector : %u b_head : %p count :%d\n", __func__,
--	//	      sector_idx, b_head, active_b_count);
-+      b_head = find_bcache_entry (sector_idx);
-+      
-+      ASSERT (b_head != NULL);
-+      
-       memcpy (buffer + bytes_read, b_head->b_start_page + sector_ofs, chunk_size);
-       
-       /*
-@@ -313,27 +520,10 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
-         break;
- 
-       /* Find Buffer Cache Entry on the list */
--      b_head = sector_to_bhead (sector_idx, false);
--      if (!b_head) /* Block is not on Buffer Cache */
--        {
--          if (active_b_count == BH_ENTRY) /* Need to evict LRU Buffer Cache Entry */
--            b_head = evict_bcache_entry();
--          else /* Find Free Buffer Cache Entry */
--            b_head = sector_to_bhead (0, true);
--          /* Initialize Free Buffer Cache Entry */
--          ASSERT (b_head != NULL)
--    	  b_head->b_state |= (1UL << BH_Used); 
--	  b_head->b_blocknr = sector_idx;
--          block_read (fs_device, sector_idx, b_head->b_start_page);
--          active_b_count++;
--        }
--      //else
--      //  printf("(%s) Find buffer head!\n");
--      /* Add Buffer Cache Entry to the LRU List */
--      list_push_back (&bh_list, &b_head->elem);
--      //printf("(%s) sector : %u b_head : %p count :%d\n"
--	//	      , __func__, sector_idx, b_head, active_b_count);
--      // b_head->b_state |= (1UL << BH_Dirty); 
-+      b_head = find_bcache_entry (sector_idx);
-+      
-+      ASSERT (b_head != NULL);
-+      
-       memcpy (b_head->b_start_page + sector_ofs, buffer + bytes_written, chunk_size);
-       b_head->b_state |= (1UL << BH_Dirty); 
- 
-@@ -444,6 +634,29 @@ evict_bcache_entry (void)
-   return b_head;
- }
- 
-+struct buffer_head *
-+find_bcache_entry(block_sector_t sector_idx)
-+{
-+  struct buffer_head *b_head = NULL;
-+
-+  b_head = sector_to_bhead (sector_idx, false);
-+  if (!b_head) /* Block is not on Buffer Cache */
-+    {
-+      if (active_b_count == BH_ENTRY) /* Need to evict LRU Buffer Cache Entry */	    
-+        b_head = evict_bcache_entry();
-+      else /* Find Free Buffer Cache Entry */
-+        b_head = sector_to_bhead (0, true);
-+      /* Initialize Free Buffer Cache Entry */
-+      ASSERT (b_head != NULL)
-+      b_head->b_state |= (1UL << BH_Used); 
-+      b_head->b_blocknr = sector_idx;
-+      block_read (fs_device, sector_idx, b_head->b_start_page);
-+      active_b_count++;
-+    }
-+    /* Add Buffer Cache Entry to the LRU List */
-+    list_push_back (&bh_list, &b_head->elem);
-+  return b_head;
-+}
- void /* Periodic Flush of dirty block */ 
- pdflush (void)
- {
+       /* Bytes left in inode, bytes left in sector, lesser of the two. */
+@@ -846,6 +875,7 @@ evict_bcache_entry (void)
+   b_head = list_entry (list_pop_front (&bh_list), struct buffer_head, elem);
+   ASSERT (b_head != NULL)
+   ASSERT ((b_head->b_state & (1UL << BH_Used)) == (1UL << BH_Used))
++  // printf ("(%s) state : %x, block_nr : %d\n", __func__, b_head->b_state, b_head->b_blocknr);
+   if ((b_head->b_state & (1UL << BH_Dirty)) == (1UL << BH_Dirty)) /* Need to flush entry */
+     block_write (fs_device, b_head->b_blocknr, b_head->b_start_page);
+   b_head->b_state = 0;
 diff --git a/src/filesys/inode.h b/src/filesys/inode.h
-index 98ec206..e441928 100644
+index e441928..245e6bd 100644
 --- a/src/filesys/inode.h
 +++ b/src/filesys/inode.h
-@@ -45,7 +45,8 @@ void inode_deny_write (struct inode *);
- void inode_allow_write (struct inode *);
- off_t inode_length (const struct inode *);
- struct buffer_head *sector_to_bhead (block_sector_t, bool);
--struct buffer_head * evict_bcache_entry (void);
-+struct buffer_head *evict_bcache_entry (void);
-+struct buffer_head *find_bcache_entry (block_sector_t);
- void pdflush (void);
+@@ -33,10 +33,12 @@ struct buffer_head
+   };
  
- #endif /* filesys/inode.h */
-diff --git a/src/vm_bak/.page.h.swp b/src/vm_bak/.page.h.swp
+ void inode_init (void);
+-bool inode_create (block_sector_t, off_t);
++bool inode_create (block_sector_t, off_t, bool);
+ struct inode *inode_open (block_sector_t);
+ struct inode *inode_reopen (struct inode *);
+ block_sector_t inode_get_inumber (const struct inode *);
++bool inode_isdir (const struct inode *);
++void inode_setdir (struct inode *);
+ void inode_close (struct inode *);
+ void inode_remove (struct inode *);
+ off_t inode_read_at (struct inode *, void *, off_t size, off_t offset);
+diff --git a/src/filesys/off_t.h b/src/filesys/off_t.h
+index 9caff4d..8959bce 100644
+--- a/src/filesys/off_t.h
++++ b/src/filesys/off_t.h
+@@ -2,6 +2,7 @@
+ #define FILESYS_OFF_T_H
+ 
+ #include <stdint.h>
++#include <stdbool.h>
+ 
+ /* An offset within a file.
+    This is a separate header because multiple headers want this
+diff --git a/src/patchfile b/src/patchfile
+index d494fa6..6a042ce 100644
+--- a/src/patchfile
++++ b/src/patchfile
+@@ -1,438 +0,0 @@
+-diff --git a/src/cscope.in.out b/src/cscope.in.out
+-index 1e931cd..8c7adbd 100644
+-Binary files a/src/cscope.in.out and b/src/cscope.in.out differ
+-diff --git a/src/cscope.po.out b/src/cscope.po.out
+-index 0e6867d..ebdb57b 100644
+-Binary files a/src/cscope.po.out and b/src/cscope.po.out differ
+-diff --git a/src/filesys/inode.c b/src/filesys/inode.c
+-index 67d3eeb..7138430 100644
+---- a/src/filesys/inode.c
+-+++ b/src/filesys/inode.c
+-@@ -11,15 +11,20 @@
+- 
+- /* Identifies an inode. */
+- #define INODE_MAGIC 0x494e4f44
+-+#define DIRECT_BLOCK_ENTRIES 124
+-+#define INDIRECT_BLOCK_ENTRIES DIRECT_BLOCK_ENTRIES + 128
+-+#define DINDIRECT_BLOCK_ENTRIES INDIRECT_BLOCK_ENTRIES + 128 * 128
+- 
+- /* On-disk inode.
+-    Must be exactly BLOCK_SECTOR_SIZE bytes long. */
+- struct inode_disk
+-   {
+--    block_sector_t start;               /* First data sector. */
+-     off_t length;                       /* File size in bytes. */
+-     unsigned magic;                     /* Magic number. */
+--    uint32_t unused[125];               /* Not used. */
+-+    /* Extensible File Support */
+-+    block_sector_t direct_map_table[DIRECT_BLOCK_ENTRIES];
+-+    block_sector_t indirect_block_sec;
+-+    block_sector_t double_indirect_block_sec;
+-   };
+- 
+- /* Returns the number of sectors to allocate for an inode SIZE
+-@@ -53,11 +58,54 @@ static int active_b_count; /* Count How many buffer cache entry is used curretly
+- static block_sector_t
+- byte_to_sector (const struct inode *inode, off_t pos) 
+- {
+-+  struct buffer_head *b_head = NULL;
+-+  block_sector_t sector_pos;
+-+  uint32_t *page_pos = NULL;
+-+
+-   ASSERT (inode != NULL);
+-+
+-+  sector_pos = pos / BLOCK_SECTOR_SIZE;
+-+  
+-   if (pos < inode->data.length)
+--    return inode->data.start + pos / BLOCK_SECTOR_SIZE;
+-+    {
+-+      if (sector_pos < DIRECT_BLOCK_ENTRIES)
+-+	// Read from Direct Pointer 
+-+        {
+-+	   return inode->data.direct_map_table[sector_pos];
+-+	}
+-+      else if (sector_pos < INDIRECT_BLOCK_ENTRIES)
+-+	// Read from Single Indirect Pointer 
+-+	{
+-+	  // Read Indirect Pointer Block 
+-+	  sector_pos -= DIRECT_BLOCK_ENTRIES;
+-+	  b_head = find_bcache_entry (inode->data.indirect_block_sec);	
+-+	  page_pos = (uint32_t *) b_head->b_start_page;
+-+	  page_pos = page_pos + sector_pos;
+-+	  return *page_pos;
+-+	}
+-+      else if (sector_pos < DINDIRECT_BLOCK_ENTRIES)
+-+	// Read from Double Indirect Pointer 
+-+	{
+-+	  // Read Double Indirect Pointer Block
+-+	  sector_pos -= INDIRECT_BLOCK_ENTRIES;
+-+	  b_head = find_bcache_entry (inode->data.double_indirect_block_sec);
+-+	  page_pos = (uint32_t *) b_head->b_start_page;
+-+	  page_pos = page_pos + (sector_pos / 128);
+-+	  // Read Indirect Pointer Block
+-+	  b_head = find_bcache_entry (*page_pos);
+-+	  page_pos = (uint32_t *) b_head->b_start_page;
+-+	  page_pos = page_pos + (sector_pos % 128);
+-+	  return *page_pos;
+-+	}
+-+      else
+-+        {
+-+	  ASSERT(false);
+-+	}
+-+      // return inode->data.start + pos / BLOCK_SECTOR_SIZE;
+-+    }
+-   else
+-     return -1;
+-+  
+- }
+- 
+- /* List of open inodes, so that opening a single inode twice
+-@@ -76,11 +124,16 @@ inode_init (void)
+-    device.
+-    Returns true if successful.
+-    Returns false if memory or disk allocation fails. */
+-+/* Extensible File Support */
+- bool
+- inode_create (block_sector_t sector, off_t length)
+- {
+-   struct inode_disk *disk_inode = NULL;
+--  bool success = false;
+-+  bool i_pblock = true, di_pblock = true, d_block = true, i_block = true, di_block = true;
+-+  uint32_t *page_pos, *ipage_pos, p_count, f_count, s_count = 0, i, j;
+-+  block_sector_t sector_len, d_sector_num;
+-+  struct buffer_head *b_head, *ib_head;
+-+  static char zeros [BLOCK_SECTOR_SIZE];
+- 
+-   ASSERT (length >= 0);
+- 
+-@@ -94,22 +147,159 @@ inode_create (block_sector_t sector, off_t length)
+-       size_t sectors = bytes_to_sectors (length);
+-       disk_inode->length = length;
+-       disk_inode->magic = INODE_MAGIC;
+--      if (free_map_allocate (sectors, &disk_inode->start)) 
+-+      
+-+      sector_len = length / BLOCK_SECTOR_SIZE;
+-+      
+-+      /* Panic if Out of Maximum File Size*/
+-+      ASSERT (sector_len <= DINDIRECT_BLOCK_ENTRIES)
+-+
+-+      /* initialize pointer block */
+-+      if (sector_len > DIRECT_BLOCK_ENTRIES)
+-+        {
+-+	  if (!free_map_allocate (1, &disk_inode->indirect_block_sec))
+-+	    goto done;
+-+	  else
+-+	    block_write (fs_device, disk_inode->indirect_block_sec, zeros);
+-+	}
+-+      if (sector_len > INDIRECT_BLOCK_ENTRIES)
+-         {
+--          block_write (fs_device, sector, disk_inode);
+--          if (sectors > 0) 
+-+	  if (!free_map_allocate (1, &disk_inode->double_indirect_block_sec))
+-+	    {
+-+	      i_pblock = false;
+-+	      goto done; /* Clean inode indirect Block */
+-+	    }
+-+	  else
+-+	    block_write(fs_device, disk_inode->double_indirect_block_sec, zeros);
+-+
+-+	  d_sector_num = sector_len - INDIRECT_BLOCK_ENTRIES;
+-+	  b_head = find_bcache_entry (disk_inode->double_indirect_block_sec);
+-+	  page_pos = (uint32_t *) b_head->b_start_page;
+-+	  for (p_count = 0; p_count < DIV_ROUND_UP(d_sector_num, 128); p_count++)
+-+	    {
+-+	      free_map_allocate (1, page_pos + p_count);
+-+	      block_write (fs_device, *(page_pos + p_count), zeros);
+-+	    }
+-+	  if (p_count != DIV_ROUND_UP(d_sector_num, 128)) 
+-+	    /* Fail to allocate whole dindirect block set */
+-+	    {
+-+	      di_pblock = i_pblock = false;
+-+	      goto done;
+-+	    }
+-+	}
+-+
+-+      b_head = ib_head = NULL;
+-+      while (sectors > 0)
+-+	{
+-+          if (s_count < DIRECT_BLOCK_ENTRIES)
+-+	      // Store to Direct Pointer 
+-             {
+--              static char zeros[BLOCK_SECTOR_SIZE];
+--              size_t i;
+--              
+--              for (i = 0; i < sectors; i++) 
+--                block_write (fs_device, disk_inode->start + i, zeros);
+--            }
+--          success = true; 
+--        } 
+-+	      if (!free_map_allocate (1, &disk_inode->direct_map_table[s_count]))
+-+	        {
+-+		  d_block = di_pblock = i_pblock = false;
+-+	          break;
+-+		}
+-+	      else
+-+	        block_write(fs_device, disk_inode->direct_map_table[s_count], zeros);
+-+	    }
+-+          else if (s_count < INDIRECT_BLOCK_ENTRIES)
+-+	      // Store to Single Indirect Pointer 
+-+	    { 
+-+	      // Read Indirect Pointer Block 
+-+	      if (!b_head)
+-+	      { 
+-+	        b_head = find_bcache_entry (disk_inode->indirect_block_sec);	
+-+	        page_pos = (uint32_t *) b_head->b_start_page;
+-+	      }
+-+
+-+	      if (!free_map_allocate (1, page_pos + (s_count - DIRECT_BLOCK_ENTRIES)))
+-+	        {
+-+		  i_block = d_block = di_pblock = i_pblock = false;
+-+	          break;
+-+		}
+-+	      else
+-+	        block_write(fs_device, *(page_pos + s_count - DIRECT_BLOCK_ENTRIES), zeros);
+-+
+-+	      if (s_count == INDIRECT_BLOCK_ENTRIES - 1)
+-+	        b_head = NULL;
+-+	    }
+-+          else if (s_count < DINDIRECT_BLOCK_ENTRIES)
+-+	      // Read from Double Indirect Pointer 
+-+	    {
+-+	      // Read Double Indirect Pointer Block
+-+	      if (!b_head)
+-+	        {
+-+		  b_head = find_bcache_entry (disk_inode->double_indirect_block_sec);
+-+	          page_pos = (uint32_t *) b_head->b_start_page;
+-+		}
+-+	      // Read Indirect Pointer Block
+-+	      if (!ib_head)
+-+	        {
+-+		  ib_head = find_bcache_entry (*(page_pos 
+-+					  + (s_count - INDIRECT_BLOCK_ENTRIES)/ 128));
+-+	          ipage_pos = (uint32_t *) ib_head->b_start_page;
+-+	      	  ipage_pos = ipage_pos + (s_count - INDIRECT_BLOCK_ENTRIES) % 128;
+-+		}
+-+	      ib_head = s_count - INDIRECT_BLOCK_ENTRIES % 128 == 127 ? NULL : ib_head;
+-+	      
+-+	      if (!free_map_allocate (1, ipage_pos + (s_count - DIRECT_BLOCK_ENTRIES)))
+-+	        {
+-+		  di_block = i_block = d_block = di_pblock = i_pblock = false;
+-+	          break;
+-+		}
+-+	      else
+-+	        block_write(fs_device, *(ipage_pos + s_count - DIRECT_BLOCK_ENTRIES), zeros);
+-+	    }
+-+          else
+-+            {
+-+	      ASSERT(false);
+-+	    }
+-+	  sectors--; s_count++;
+-+	}
+-+done:
+-+      if (!di_block) /* Clean Data Block Pointed by Dindirect Pointer Block */
+-+	{
+-+	  b_head = find_bcache_entry (disk_inode->double_indirect_block_sec);
+-+	  page_pos = (uint32_t *) b_head->b_start_page;
+-+	  for (i = 0; *(page_pos + i) != 0; j++)
+-+	    {
+-+	      ib_head = find_bcache_entry (*(page_pos + i));
+-+	      ipage_pos = (uint32_t *) b_head->b_start_page;
+-+	      for (j = 0; *(ipage_pos + j) != 0 ; j++)	
+-+		free_map_release (*(ipage_pos + j), 1);	
+-+	    }
+-+	}
+-+      if (!i_block) /* Clean Data Block Pointed by Indirect Pointer Block */
+-+	{
+-+	  b_head = find_bcache_entry (disk_inode->indirect_block_sec);
+-+	  page_pos = (uint32_t *) b_head->b_start_page;
+-+	  for (i = 0; i < INDIRECT_BLOCK_ENTRIES && *(page_pos + i) != 0; i++)
+-+	    free_map_release (*(page_pos + i), 1);
+-+	}
+-+      if (!d_block) /* Clean Data Block Pointed by Inode Block */
+-+	{
+-+	  for (i = 0; i < DIRECT_BLOCK_ENTRIES && disk_inode->direct_map_table[i] != 0; i++)
+-+	    free_map_release (disk_inode->direct_map_table[i], 1);
+-+	}
+-+      if (!di_pblock) /* Clean Dindirect Pointer Block */
+-+        {
+-+	  b_head = find_bcache_entry (disk_inode->double_indirect_block_sec);
+-+	  page_pos = (uint32_t *) b_head->b_start_page;
+-+	  for (f_count = 0; f_count <= p_count; f_count++)
+-+	    free_map_release (1, *(page_pos + f_count));
+-+	  memset(b_head->b_start_page, 0, 512);
+-+	  block_write (fs_device, b_head->b_blocknr, b_head->b_start_page);
+-+	  b_head->b_state = 0;
+-+	  b_head->b_blocknr = 0;
+-+	  free_map_release (disk_inode->double_indirect_block_sec, 1);
+-+	}
+-+      if (!i_pblock) /* Clean Indirect Pointer Block */
+-+        free_map_release (disk_inode->indirect_block_sec, 1);
+-+      if (i_pblock && di_pblock && d_block && i_block && di_block)
+-+		/* Write inode to the disk */
+-+	block_write (fs_device, sector, disk_inode);
+-       free (disk_inode);
+-     }
+--  return success;
+-+  return i_pblock && di_pblock && d_block && i_block && di_block;
+- }
+- 
+- /* Reads an inode from SECTOR
+-@@ -170,6 +360,10 @@ inode_get_inumber (const struct inode *inode)
+- void
+- inode_close (struct inode *inode) 
+- {
+-+  uint32_t i, j;
+-+  struct buffer_head *b_head, *ib_head;
+-+  struct inode_disk *disk_inode = NULL;
+-+  uint32_t *page_pos = NULL, *ipage_pos = NULL;
+-   /* Ignore null pointer. */
+-   if (inode == NULL)
+-     return;
+-@@ -183,9 +377,36 @@ inode_close (struct inode *inode)
+-       /* Deallocate blocks if removed. */
+-       if (inode->removed) 
+-         {
+-+	  /* Free Disk Inode */
+-           free_map_release (inode->sector, 1);
+--          free_map_release (inode->data.start,
+--                            bytes_to_sectors (inode->data.length)); 
+-+	  /* Free Data Blocks */
+-+	  disk_inode = &inode->data;
+-+	  if (disk_inode->double_indirect_block_sec)
+-+	  /* Free Dindirect Block Set and its Pointer blocks*/
+-+	    {
+-+	      b_head = find_bcache_entry (disk_inode->double_indirect_block_sec);
+-+	      page_pos = (uint32_t *) b_head->b_start_page;                      
+-+	      for (i = 0; *(page_pos + i) != 0; j++)                          
+-+  	        {                                                                
+-+    		  ib_head = find_bcache_entry (*(page_pos + i));                 
+-+    		  ipage_pos = (uint32_t *) b_head->b_start_page;                 
+-+    		  for (j = 0; *(ipage_pos + j) != 0; j++)              
+-+      		    free_map_release (*(ipage_pos + j), 1); 
+-+  		} 
+-+	    }
+-+	  if (disk_inode->indirect_block_sec)
+-+	  /* Free Indirect Block Set and its Pointer blocks*/
+-+	    {
+-+	      b_head = find_bcache_entry (disk_inode->indirect_block_sec);
+-+	      page_pos = (uint32_t *) b_head->b_start_page;
+-+	      for (i = 0; i < INDIRECT_BLOCK_ENTRIES && *(page_pos + i) != 0; i++)
+-+      		free_map_release (*(page_pos + i), 1);
+-+	    }
+-+	  if (disk_inode->direct_map_table[0])
+-+	  /* Free Direct Block Set */
+-+	      for (i = 0; i < DIRECT_BLOCK_ENTRIES 
+-+		&& disk_inode->direct_map_table[i] != 0; i++)
+-+      		free_map_release (disk_inode->direct_map_table[i], 1);
+-         }
+- 
+-       free (inode); 
+-@@ -228,24 +449,10 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
+-       if (chunk_size <= 0)
+-         break;
+-       /* Find Buffer Cache Entry on the list */
+--      b_head = sector_to_bhead (sector_idx, false);
+--      if (!b_head) /* Block is not on Buffer Cache */
+--        {
+--	  if (active_b_count == BH_ENTRY) /* Need to evict LRU Buffer Cache Entry */	    
+--	    b_head = evict_bcache_entry();
+--	  else /* Find Free Buffer Cache Entry */
+--	    b_head = sector_to_bhead (0, true);
+--	  /* Initialize Free Buffer Cache Entry */
+--	  ASSERT (b_head != NULL)
+--    	  b_head->b_state |= (1UL << BH_Used); 
+--	  b_head->b_blocknr = sector_idx;
+--	  block_read (fs_device, sector_idx, b_head->b_start_page);
+--	  active_b_count++;
+--        }
+--      /* Add Buffer Cache Entry to the LRU List */
+--      list_push_back (&bh_list, &b_head->elem);
+--      //printf("(%s) sector : %u b_head : %p count :%d\n", __func__,
+--	//	      sector_idx, b_head, active_b_count);
+-+      b_head = find_bcache_entry (sector_idx);
+-+      
+-+      ASSERT (b_head != NULL);
+-+      
+-       memcpy (buffer + bytes_read, b_head->b_start_page + sector_ofs, chunk_size);
+-       
+-       /*
+-@@ -313,27 +520,10 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
+-         break;
+- 
+-       /* Find Buffer Cache Entry on the list */
+--      b_head = sector_to_bhead (sector_idx, false);
+--      if (!b_head) /* Block is not on Buffer Cache */
+--        {
+--          if (active_b_count == BH_ENTRY) /* Need to evict LRU Buffer Cache Entry */
+--            b_head = evict_bcache_entry();
+--          else /* Find Free Buffer Cache Entry */
+--            b_head = sector_to_bhead (0, true);
+--          /* Initialize Free Buffer Cache Entry */
+--          ASSERT (b_head != NULL)
+--    	  b_head->b_state |= (1UL << BH_Used); 
+--	  b_head->b_blocknr = sector_idx;
+--          block_read (fs_device, sector_idx, b_head->b_start_page);
+--          active_b_count++;
+--        }
+--      //else
+--      //  printf("(%s) Find buffer head!\n");
+--      /* Add Buffer Cache Entry to the LRU List */
+--      list_push_back (&bh_list, &b_head->elem);
+--      //printf("(%s) sector : %u b_head : %p count :%d\n"
+--	//	      , __func__, sector_idx, b_head, active_b_count);
+--      // b_head->b_state |= (1UL << BH_Dirty); 
+-+      b_head = find_bcache_entry (sector_idx);
+-+      
+-+      ASSERT (b_head != NULL);
+-+      
+-       memcpy (b_head->b_start_page + sector_ofs, buffer + bytes_written, chunk_size);
+-       b_head->b_state |= (1UL << BH_Dirty); 
+- 
+-@@ -444,6 +634,29 @@ evict_bcache_entry (void)
+-   return b_head;
+- }
+- 
+-+struct buffer_head *
+-+find_bcache_entry(block_sector_t sector_idx)
+-+{
+-+  struct buffer_head *b_head = NULL;
+-+
+-+  b_head = sector_to_bhead (sector_idx, false);
+-+  if (!b_head) /* Block is not on Buffer Cache */
+-+    {
+-+      if (active_b_count == BH_ENTRY) /* Need to evict LRU Buffer Cache Entry */	    
+-+        b_head = evict_bcache_entry();
+-+      else /* Find Free Buffer Cache Entry */
+-+        b_head = sector_to_bhead (0, true);
+-+      /* Initialize Free Buffer Cache Entry */
+-+      ASSERT (b_head != NULL)
+-+      b_head->b_state |= (1UL << BH_Used); 
+-+      b_head->b_blocknr = sector_idx;
+-+      block_read (fs_device, sector_idx, b_head->b_start_page);
+-+      active_b_count++;
+-+    }
+-+    /* Add Buffer Cache Entry to the LRU List */
+-+    list_push_back (&bh_list, &b_head->elem);
+-+  return b_head;
+-+}
+- void /* Periodic Flush of dirty block */ 
+- pdflush (void)
+- {
+-diff --git a/src/filesys/inode.h b/src/filesys/inode.h
+-index 98ec206..e441928 100644
+---- a/src/filesys/inode.h
+-+++ b/src/filesys/inode.h
+-@@ -45,7 +45,8 @@ void inode_deny_write (struct inode *);
+- void inode_allow_write (struct inode *);
+- off_t inode_length (const struct inode *);
+- struct buffer_head *sector_to_bhead (block_sector_t, bool);
+--struct buffer_head * evict_bcache_entry (void);
+-+struct buffer_head *evict_bcache_entry (void);
+-+struct buffer_head *find_bcache_entry (block_sector_t);
+- void pdflush (void);
+- 
+- #endif /* filesys/inode.h */
+-diff --git a/src/vm_bak/.page.h.swp b/src/vm_bak/.page.h.swp
+-deleted file mode 100644
+-index d62e5b5..0000000
+-Binary files a/src/vm_bak/.page.h.swp and /dev/null differ
+diff --git a/src/tests/.lib.c.swp b/src/tests/.lib.c.swp
 deleted file mode 100644
-index d62e5b5..0000000
-Binary files a/src/vm_bak/.page.h.swp and /dev/null differ
+index ec96aa3..0000000
+Binary files a/src/tests/.lib.c.swp and /dev/null differ
+diff --git a/src/tests/filesys/extended/.grow-seq.inc.swp b/src/tests/filesys/extended/.grow-seq.inc.swp
+deleted file mode 100644
+index 590c3a1..0000000
+Binary files a/src/tests/filesys/extended/.grow-seq.inc.swp and /dev/null differ
+diff --git a/src/threads/thread.c b/src/threads/thread.c
+index a29b816..88b80c3 100644
+--- a/src/threads/thread.c
++++ b/src/threads/thread.c
+@@ -13,6 +13,7 @@
+ #include "threads/vaddr.h"
+ #ifdef USERPROG
+ #include "userprog/process.h"
++#include "filesys/directory.h"
+ #endif
+ 
+ /* Random value for struct thread's `magic' member.
+@@ -471,6 +472,7 @@ init_thread (struct thread *t, const char *name, int priority)
+   sema_init(&t->parent_sema, 0);
+   sema_init(&t->exit_sema, 0);
+   sema_init(&t->load_sema, 0);
++  t->current_dir = NULL;
+ #endif
+ 
+   old_level = intr_disable ();
+diff --git a/src/threads/thread.h b/src/threads/thread.h
+index 35b16a3..275ea68 100644
+--- a/src/threads/thread.h
++++ b/src/threads/thread.h
+@@ -110,6 +110,7 @@ struct thread
+     struct semaphore load_sema;
+     int load_status;
+     void (*handler[3]) (); /* Signal Handler */
++    struct dir *current_dir;
+ #endif
+ 
+     /* Owned by thread.c. */
+diff --git a/src/userprog/process.c b/src/userprog/process.c
+index 06282fa..d49462f 100644
+--- a/src/userprog/process.c
++++ b/src/userprog/process.c
+@@ -53,6 +53,9 @@ process_execute (const char *file_name)
+   if (tid == TID_ERROR)
+     palloc_free_page (fn_copy); 
+   thread_current()->ctid = tid;
++  thread_current ()->current_dir = thread_current ()->current_dir ? 
++	  			thread_current()->current_dir: dir_open_root ();
++  thread_wait (tid)->current_dir = thread_current ()->current_dir;
+   return tid;
+ }
+ 
+diff --git a/src/userprog/syscall.c b/src/userprog/syscall.c
+index 24749ad..6226bcf 100644
+--- a/src/userprog/syscall.c
++++ b/src/userprog/syscall.c
+@@ -13,11 +13,16 @@
+ #include "filesys/file.h"
+ #include "filesys/inode.h"
+ #include "filesys/filesys.h"
+-
++#include "filesys/directory.h"
+ 
+ static void syscall_handler (struct intr_frame *);
+ static bool check_address(void * address);
+ static bool check_filename_address(void * address);
++static bool chdir (const char *dir);
++static bool mkdir (const char *dir);
++static bool readdir (int fd, char *name);
++static bool isdir (int fd);
++static int inumber (int fd);
+ 
+ struct lock filesys_lock;
+ extern struct list all_list;
+@@ -41,7 +46,7 @@ static void
+ syscall_handler (struct intr_frame *f)                         
+ {                                                              
+   unsigned int *status, *fd;                                            
+-  char** file;                                                 
++  char** file, **dir, **name;                                                 
+   unsigned *initial_size, *size, *position;                    
+   void** buffer;                                               
+   void* usp = f->esp;                                          
+@@ -310,6 +315,43 @@ syscall_handler (struct intr_frame *f)
+   case SYS_YIELD:
+     thread_yield();
+     break;
++  case SYS_CHDIR: /* (const char *dir), Change the current directory. */
++    if(bad_ptr(usp + 4, f)) break;                               
++    dir = usp + 4;
++    lock_acquire(&filesys_lock);
++    f->eax = chdir (*dir);
++    lock_release(&filesys_lock);
++    break;
++  case SYS_MKDIR: /* (const char *dir) Create a directory. */
++    if(bad_ptr(usp + 4, f)) break;                               
++    dir = usp + 4;
++    lock_acquire(&filesys_lock);
++    f->eax = mkdir (*dir);
++    lock_release(&filesys_lock);
++    break;
++  case SYS_READDIR: /* (int fd, char *name) Reads a directory entry. */
++    if(bad_ptr(usp + 16, f)) break;                              
++    if(bad_ptr(usp + 20, f)) break;
++    fd = usp + 4;
++    name = usp + 4;
++    lock_acquire(&filesys_lock);
++    f->eax = readdir (*fd, *name);
++    lock_release(&filesys_lock);
++    break;
++  case SYS_ISDIR: /* (int fd) Tests if a fd represents a directory. */
++    if(bad_ptr(usp + 4, f)) break;                               
++    fd = usp + 4;
++    lock_acquire(&filesys_lock);
++    f->eax = isdir (*fd);
++    lock_release(&filesys_lock);
++    break;
++  case SYS_INUMBER: /* (int fd) Returns the inode number for a fd. */
++    if(bad_ptr(usp + 4, f)) break;                               
++    fd = usp + 4;
++    lock_acquire(&filesys_lock);
++    f->eax = inumber (*fd);
++    lock_release(&filesys_lock);
++    break;
+   }
+ }
+ 
+@@ -388,3 +430,39 @@ static bool bad_ptr(void* ptr, struct intr_frame *f)
+   return false;
+ }
+ 
++static bool chdir (const char *dir)
++{
++  char *filename = NULL;
++  struct dir *dir_ = NULL;
++  dir_ = find_end_dir (dir, &filename, false);
++  thread_current ()->current_dir = dir_ ? dir_ : thread_current ()->current_dir; 
++  return dir ? true : false; 
++}
++
++static bool mkdir (const char *dir)
++{
++  char *filename = NULL;
++  return find_end_dir (dir, &filename, true);
++}
++
++static bool readdir (int fd, char *name)
++{ 
++  off_t bytes_read;
++  struct dir_entry e;
++  bytes_read = file_read (thread_current() ->fd_file[fd], &e, sizeof (struct dir_entry));
++  if (bytes_read)
++    strlcpy (name, e.name, NAME_MAX +1);
++  return bytes_read;
++}
++
++static bool isdir (int fd)
++{
++  struct file *file = thread_current ()->fd_file[fd];
++  return inode_isdir (file->inode); 
++}
++
++static int inumber (int fd)
++{
++  struct file *file = thread_current ()->fd_file[fd];
++  return inode_get_inumber (file->inode);
++}

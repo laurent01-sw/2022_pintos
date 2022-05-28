@@ -5,6 +5,8 @@
 #include "filesys/filesys.h"
 #include "filesys/inode.h"
 #include "threads/malloc.h"
+#include "threads/thread.h"
+#include "filesys/free-map.h"
 
 /* A directory. */
 struct dir 
@@ -14,19 +16,19 @@ struct dir
   };
 
 /* A single directory entry. */
-struct dir_entry 
-  {
-    block_sector_t inode_sector;        /* Sector number of header. */
-    char name[NAME_MAX + 1];            /* Null terminated file name. */
-    bool in_use;                        /* In use or free? */
-  };
+//struct dir_entry 
+//  {
+//    block_sector_t inode_sector;        /* Sector number of header. */
+//    char name[NAME_MAX + 1];            /* Null terminated file name. */
+//    bool in_use;                        /* In use or free? */
+//  };
 
 /* Creates a directory with space for ENTRY_CNT entries in the
    given SECTOR.  Returns true if successful, false on failure. */
 bool
 dir_create (block_sector_t sector, size_t entry_cnt)
 {
-  return inode_create (sector, entry_cnt * sizeof (struct dir_entry));
+  return inode_create (sector, 0, true);
 }
 
 /* Opens and returns the directory for the given INODE, of which
@@ -100,6 +102,9 @@ lookup (const struct dir *dir, const char *name,
 
   for (ofs = 0; inode_read_at (dir->inode, &e, sizeof e, ofs) == sizeof e;
        ofs += sizeof e) 
+    {
+      // printf ("(%s) sector : %d, name : %s, in_use %d\n"
+	//	      ,__func__ ,e.inode_sector, e.name, e.in_use);
     if (e.in_use && !strcmp (name, e.name)) 
       {
         if (ep != NULL)
@@ -108,6 +113,7 @@ lookup (const struct dir *dir, const char *name,
           *ofsp = ofs;
         return true;
       }
+    }
   return false;
 }
 
@@ -124,6 +130,7 @@ dir_lookup (const struct dir *dir, const char *name,
   ASSERT (dir != NULL);
   ASSERT (name != NULL);
 
+  // printf ("(%s) dir : %p, name : %s\n" ,__func__, dir, name);
   if (lookup (dir, name, &e, NULL))
     *inode = inode_open (e.inode_sector);
   else
@@ -173,6 +180,8 @@ dir_add (struct dir *dir, const char *name, block_sector_t inode_sector)
   strlcpy (e.name, name, sizeof e.name);
   e.inode_sector = inode_sector;
   success = inode_write_at (dir->inode, &e, sizeof e, ofs) == sizeof e;
+  // printf ("(%s) sector : %d, name : %s, in_use : %d\n"
+	//	  ,__func__, e.inode_sector, e.name, e.in_use);
 
  done:
   return success;
@@ -200,6 +209,18 @@ dir_remove (struct dir *dir, const char *name)
   inode = inode_open (e.inode_sector);
   if (inode == NULL)
     goto done;
+  
+  /* Prevent directory that have entries from removing */
+  if (inode_isdir (inode))
+    {
+      off_t dir_ofs; struct dir_entry e_ite;
+      for (dir_ofs = 0; inode_read_at (inode, &e_ite, sizeof e_ite, dir_ofs) == sizeof e;
+	dir_ofs += sizeof e_ite)
+	{
+	  if (e_ite.in_use)
+	    goto done;
+	}
+    }
 
   /* Erase directory entry. */
   e.in_use = false;
@@ -233,4 +254,103 @@ dir_readdir (struct dir *dir, char name[NAME_MAX + 1])
         } 
     }
   return false;
+}
+
+struct dir *
+find_end_dir (const char *name, char **filename, bool create) 
+{
+  /* Parse the path, need to implement relative path function */     
+  struct dir *dir = (*name == '/' || !(thread_current ()->current_dir)) 
+	  ? dir_open_root () : dir_reopen (thread_current ()->current_dir), *next_dir;
+  struct inode *inode = NULL;
+  block_sector_t inode_sector = 0;
+  char *s = name;
+  char *token, *save_ptr;                                            
+  uint32_t depth = 0, i = 0;                                   
+
+  const char *p = name;
+  if (*p != '/') depth++;  
+  for (p = name; *p != '\0'; p++)                                    
+    // if (*p == '/') depth++;                               
+    if (*p == '/' && *(p + 1) != '\0' && *(p + 1) != '/') depth++;                               
+  /*
+  if (thread_current ()->current_dir)
+    printf ("tid : %d rootdir : %d, currentdir : %d, currentdir_pointer : %p, name : %s depth : %d\n"
+		  ,thread_current ()->tid,
+		  1 ,inode_get_inumber(thread_current ()->current_dir->inode), 
+		  thread_current ()->current_dir, s, depth);
+  if (!thread_current ()->current_dir)
+    printf ("tid : %d rootdir : %d, currentdir : %d, name : %s depth : %d\n"
+		  ,thread_current ()->tid,
+		  1 ,0, s, depth);
+  */
+  char *parsed_dir [depth];                                          
+  for (token = strtok_r (s, "/", &save_ptr); token != NULL;          
+      token = strtok_r (NULL, "/", &save_ptr))                     
+    {                                                                
+      parsed_dir[i++] = token;                                       
+      // printf ("'%d : %s' ", i - 1, token);                    
+      if (dir_lookup (dir, token, &inode) && create && i == depth && inode)
+	return NULL;	      
+      
+      if (!inode)
+	{ 
+	  //printf ("no entry found!\n");
+	  if (create && i == depth)
+	    {
+	      //printf ("create directory\n");
+	      free_map_allocate (1, &inode_sector);
+	      dir_create (inode_sector, 16);
+	      if (dir_add (dir, token, inode_sector))
+		{
+	      	  inode = inode_open (inode_sector);
+	      	  return dir_open (inode);
+	        }
+	      else
+		{
+		  free_map_release (inode_sector, 1);
+		  return NULL;
+		}
+	    }
+	  else
+	    {
+	      *filename = token;
+	      //printf ("filename : %s\n", *filename);
+	      return dir;
+	    }
+	}
+
+      if (inode_isdir(inode))                                         
+        {                                                            
+	  if (i == depth)
+	    {
+	      *filename = token;
+	      //printf ("return dir\n");
+	      return dir;
+	    }
+          next_dir = dir_open (inode);                                    
+	  dir_close (dir);
+	  dir = next_dir;
+	  //printf ("go to next dir\n");
+        }                                                            
+      else /* Check whether regular File is in the middle */         
+        {                                                            
+          if (i != depth)                                            
+            {                                                        
+              printf ("(%s) Regular File in the middle of the path!\n",__func__);
+  	      printf ("name : %s, current depth : %d, current elem : %s\n",name, i, token);
+	      return NULL;
+            }                                                        
+	  else
+	    *filename = token;
+        }                                                            
+    }                                                                
+  // printf ("\n");
+  return dir;
+}
+
+struct inode*
+dir_to_inode (const struct dir *dir)
+{
+  return dir->inode;
 }

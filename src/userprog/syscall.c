@@ -13,11 +13,16 @@
 #include "filesys/file.h"
 #include "filesys/inode.h"
 #include "filesys/filesys.h"
-
+#include "filesys/directory.h"
 
 static void syscall_handler (struct intr_frame *);
 static bool check_address(void * address);
 static bool check_filename_address(void * address);
+static bool chdir (const char *dir);
+static bool mkdir (const char *dir);
+static bool readdir (int fd, char *name);
+static bool isdir (int fd);
+static int inumber (int fd);
 
 struct lock filesys_lock;
 extern struct list all_list;
@@ -41,7 +46,7 @@ static void
 syscall_handler (struct intr_frame *f)                         
 {                                                              
   unsigned int *status, *fd;                                            
-  char** file;                                                 
+  char** file, **dir, **name;                                                 
   unsigned *initial_size, *size, *position;                    
   void** buffer;                                               
   void* usp = f->esp;                                          
@@ -310,6 +315,43 @@ syscall_handler (struct intr_frame *f)
   case SYS_YIELD:
     thread_yield();
     break;
+  case SYS_CHDIR: /* (const char *dir), Change the current directory. */
+    if(bad_ptr(usp + 4, f)) break;                               
+    dir = usp + 4;
+    lock_acquire(&filesys_lock);
+    f->eax = chdir (*dir);
+    lock_release(&filesys_lock);
+    break;
+  case SYS_MKDIR: /* (const char *dir) Create a directory. */
+    if(bad_ptr(usp + 4, f)) break;                               
+    dir = usp + 4;
+    lock_acquire(&filesys_lock);
+    f->eax = mkdir (*dir);
+    lock_release(&filesys_lock);
+    break;
+  case SYS_READDIR: /* (int fd, char *name) Reads a directory entry. */
+    if(bad_ptr(usp + 16, f)) break;                              
+    if(bad_ptr(usp + 20, f)) break;
+    fd = usp + 16;
+    name = usp + 20;
+    lock_acquire(&filesys_lock);
+    f->eax = readdir (*fd, *name);
+    lock_release(&filesys_lock);
+    break;
+  case SYS_ISDIR: /* (int fd) Tests if a fd represents a directory. */
+    if(bad_ptr(usp + 4, f)) break;                               
+    fd = usp + 4;
+    lock_acquire(&filesys_lock);
+    f->eax = isdir (*fd);
+    lock_release(&filesys_lock);
+    break;
+  case SYS_INUMBER: /* (int fd) Returns the inode number for a fd. */
+    if(bad_ptr(usp + 4, f)) break;                               
+    fd = usp + 4;
+    lock_acquire(&filesys_lock);
+    f->eax = inumber (*fd);
+    lock_release(&filesys_lock);
+    break;
   }
 }
 
@@ -388,3 +430,105 @@ static bool bad_ptr(void* ptr, struct intr_frame *f)
   return false;
 }
 
+static bool chdir (const char *dir)
+{
+  char s[strlen(dir) + 1];
+  char *filename = NULL;
+  struct dir *dir_ = NULL, *next_dir_;
+  struct inode *inode = NULL;
+
+  strlcpy (s, dir, strlen(dir) + 1);
+  dir_ = find_end_dir (s, &filename, false);
+  if (dir_ != NULL)
+    {
+      dir_lookup (dir_, filename, &inode);
+      if (inode != NULL)
+        {
+      	  next_dir_ = dir_open (inode);
+          dir_close (dir_);
+          dir_ = next_dir_;
+          thread_current ()->current_dir = dir_ ? dir_ : thread_current ()->current_dir; 
+	  return true;
+        }
+      else
+	return false;
+    }
+  return false; 
+}
+
+static bool mkdir (const char *dir)
+{
+  char s[strlen(dir) + 1];
+  char *filename = NULL;
+  struct dir *dir_ = NULL;
+
+  if (*dir == '\0')
+    return NULL;
+  strlcpy (s, dir, strlen(dir) + 1);
+  if ((dir_ = find_end_dir (s, &filename, true)))
+    {
+      dir_close (dir_);
+      // printf ("success!\n");
+      return true;
+    }
+  else
+    return false;
+}
+
+static bool readdir (int fd, char *name)
+{ 
+  off_t bytes_read;
+  struct dir_entry e;
+  struct thread *t = thread_current ();
+  int i;
+
+  for(i = 0; i < t->fd_pos; i++)
+    {
+      if(t->fd[i] == fd)
+        {
+          if(t->fd_file[i] == NULL)
+            return NULL;
+          else
+            bytes_read = file_read(t->fd_file[i], &e, sizeof (struct dir_entry));
+	}
+    }
+
+  if (bytes_read)
+    strlcpy (name, e.name, NAME_MAX +1);
+  return bytes_read;
+}
+
+static bool isdir (int fd)
+{
+  struct file *file = NULL;
+  int i; struct thread *t = thread_current ();
+  
+  for(i = 0; i < t->fd_pos; i++)
+    {
+      if(t->fd[i] == fd)
+        {
+          if(t->fd_file[i] == NULL)
+            return NULL;
+          else
+            return inode_isdir (t->fd_file[i]->inode);
+	}
+    }
+
+  return inode_isdir (file->inode); 
+}
+
+static int inumber (int fd)
+{
+  struct file *file = NULL;
+  int i; struct thread *t = thread_current ();
+  for(i = 0; i < t->fd_pos; i++)
+    {
+      if(t->fd[i] == fd)
+        {
+          if(t->fd_file[i] == NULL)
+            return NULL;
+          else
+            return inode_get_inumber (t->fd_file[i]->inode);
+	}
+    }
+}

@@ -13,6 +13,7 @@
 #include "threads/vaddr.h"
 #ifdef USERPROG
 #include "userprog/process.h"
+#include "filesys/directory.h"
 #endif
 
 /* Random value for struct thread's `magic' member.
@@ -32,7 +33,7 @@ struct list all_list;
 static struct thread *idle_thread;
 
 /* Initial thread, the thread running init.c:main(). */
-static struct thread *initial_thread;
+struct thread *initial_thread;
 
 /* Lock used by allocate_tid(). */
 static struct lock tid_lock;
@@ -471,6 +472,7 @@ init_thread (struct thread *t, const char *name, int priority)
   sema_init(&t->parent_sema, 0);
   sema_init(&t->exit_sema, 0);
   sema_init(&t->load_sema, 0);
+  t->current_dir = NULL;
 #endif
 
   old_level = intr_disable ();

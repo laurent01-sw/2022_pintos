@@ -10,6 +10,7 @@
 #include "threads/palloc.h"
 #include "threads/malloc.h"
 #include "threads/synch.h"
+#include "threads/thread.h"
 
 /* Partition that contains the file system. */
 struct block *fs_device;
@@ -58,13 +59,20 @@ bool
 filesys_create (const char *name, off_t initial_size) 
 {
   block_sector_t inode_sector = 0;
-  struct dir *dir = dir_open_root ();
-  bool success = (dir != NULL
+  struct dir *dir = NULL;
+  char s[strlen(name) + 1];
+  char *filename = NULL;
+
+  strlcpy (s, name, strlen(name) + 1);
+  dir = find_end_dir (s, &filename, false);
+  
+  bool success = (dir != NULL && filename != NULL
                   && free_map_allocate (1, &inode_sector)
-                  && inode_create (inode_sector, initial_size)
-                  && dir_add (dir, name, inode_sector));
+                  && inode_create (inode_sector, initial_size, false)
+                  && dir_add (dir, filename, inode_sector));
   if (!success && inode_sector != 0) 
     free_map_release (inode_sector, 1);
+
   dir_close (dir);
 
   return success;
@@ -78,11 +86,27 @@ filesys_create (const char *name, off_t initial_size)
 struct file *
 filesys_open (const char *name)
 {
-  struct dir *dir = dir_open_root ();
+  struct dir *dir = NULL;
+  char s[strlen(name) + 1];
+  char *filename = NULL;
   struct inode *inode = NULL;
 
+  strlcpy (s, name, strlen(name) + 1);
+
+  if (*name == '\0')
+    return NULL;
+
+  // printf ("%s\n",s);
+  if (!strcmp(s, "/"))
+    return file_open(dir_to_inode (dir_open_root ()));
+
+  dir = find_end_dir (s, &filename, false);
+
+  //printf ("(%s) tid : %d, dir : %p, filename : %s\n", __func__, 
+  //		  thread_current ()->tid, dir, filename);
+  
   if (dir != NULL)
-    dir_lookup (dir, name, &inode);
+    dir_lookup (dir, filename, &inode);
   dir_close (dir);
 
   return file_open (inode);
@@ -95,8 +119,18 @@ filesys_open (const char *name)
 bool
 filesys_remove (const char *name) 
 {
-  struct dir *dir = dir_open_root ();
-  bool success = dir != NULL && dir_remove (dir, name);
+  struct dir *dir = NULL;
+  struct inode *inode = NULL;
+  char s[strlen(name) + 1];
+  char *filename = NULL;
+
+  strlcpy (s, name, strlen(name) + 1);
+  dir = find_end_dir (s, &filename, false);
+
+  if (dir != NULL && !strcmp (s,"/"))
+    return false;
+  
+  bool success = dir != NULL && dir_remove (dir, filename);
   dir_close (dir); 
 
   return success;

@@ -110,6 +110,7 @@ struct thread
     struct semaphore load_sema;
     int load_status;
     void (*handler[3]) (); /* Signal Handler */
+    struct dir *current_dir;
 #endif
 
     /* Owned by thread.c. */
