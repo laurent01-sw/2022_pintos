@@ -51,4 +51,6 @@ struct buffer_head *evict_bcache_entry (void);
 struct buffer_head *find_bcache_entry (block_sector_t);
 void pdflush (void);
 
+bool inode_is_removed (struct inode *);
+
 #endif /* filesys/inode.h */

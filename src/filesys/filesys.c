@@ -66,7 +66,16 @@ filesys_create (const char *name, off_t initial_size)
   strlcpy (s, name, strlen(name) + 1);
   dir = find_end_dir (s, &filename, false);
   
-  bool success = (dir != NULL && filename != NULL
+  bool success = false;
+
+  /* Check if directory is valid */
+  if (inode_is_removed (dir_get_inode (dir)))
+  {
+    dir_close (dir);
+    return success;
+  }
+
+  success = (dir != NULL && filename != NULL
                   && free_map_allocate (1, &inode_sector)
                   && inode_create (inode_sector, initial_size, false)
                   && dir_add (dir, filename, inode_sector));
@@ -107,6 +116,7 @@ filesys_open (const char *name)
   
   if (dir != NULL)
     dir_lookup (dir, filename, &inode);
+
   dir_close (dir);
 
   if (inode == NULL)

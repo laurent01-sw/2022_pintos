@@ -67,7 +67,7 @@ byte_to_sector (const struct inode *inode, off_t pos)
   ASSERT (inode != NULL);
 
   sector_pos = pos / BLOCK_SECTOR_SIZE;
-  
+
   if (pos < inode->data.length)
     {
       if (sector_pos < DIRECT_BLOCK_ENTRIES)
@@ -503,7 +503,7 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       /* Number of bytes to actually copy out of this sector. */
       int chunk_size = size < min_left ? size : min_left;
       if (chunk_size <= 0)
-        break;
+        break;	
       /* Find Buffer Cache Entry on the list */
       b_head = find_bcache_entry (sector_idx);
       
@@ -511,7 +511,7 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
       
       memcpy (buffer + bytes_read, b_head->b_start_page + sector_ofs, chunk_size);
       
-      /*
+            /*
       if (sector_ofs == 0 && chunk_size == BLOCK_SECTOR_SIZE)
         {
           // Read full sector directly into caller's buffer. 
@@ -531,14 +531,14 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
           memcpy (buffer + bytes_read, bounce + sector_ofs, chunk_size);
         }
       */
-      
+
       /* Advance. */
       size -= chunk_size;
       offset += chunk_size;
       bytes_read += chunk_size;
     }
   // free (bounce);
-
+	
   return bytes_read;
 }
 
@@ -960,4 +960,10 @@ pdflush (void)
     	&& ((b_head->b_state & (1UL << BH_Dirty)) == (1UL << BH_Dirty)))
       block_write (fs_device, b_head->b_blocknr, b_head->b_start_page);
   }
+}
+
+bool
+inode_is_removed (struct inode *arg_node)
+{
+  return arg_node->removed;
 }
