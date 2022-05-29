@@ -461,22 +461,43 @@ static bool chdir (const char *dir)
   struct dir *dir_ = NULL, *next_dir_;
   struct inode *inode = NULL;
 
+  /* pwd, upper? */
+  if (strcmp (dir, ".") == 0) 
+    {
+      // Do not move.
+      return true;
+    }
+
   strlcpy (s, dir, strlen(dir) + 1);
   dir_ = find_end_dir (s, &filename, false);
+
   if (dir_ != NULL)
     {
-      dir_lookup (dir_, filename, &inode);
-      if (inode != NULL)
+      if (strcmp (dir, "..") == 0)
         {
-      	  next_dir_ = dir_open (inode);
-          dir_close (dir_);
-          dir_ = next_dir_;
-          thread_current ()->current_dir = dir_ ? dir_ : thread_current ()->current_dir; 
-	  return true;
+          struct inode *par_dir_inode = dir_get_parent_inode (dir_);
+          
+          thread_current ()->current_dir = dir_open (par_dir_inode);
+          return true;
         }
       else
-	return false;
+        {
+          dir_lookup (dir_, filename, &inode);
+          if (inode != NULL)
+            {
+              next_dir_ = dir_open (inode);
+              dir_close (dir_);
+              
+              dir_ = next_dir_;
+              thread_current ()->current_dir = dir_ ? dir_ : thread_current ()->current_dir; 
+
+              return true;
+            }
+          else
+            return false;
+        }
     }
+
   return false; 
 }
 
@@ -486,17 +507,25 @@ static bool mkdir (const char *dir)
   char *filename = NULL;
   struct dir *dir_ = NULL;
 
-  if (*dir == '\0')
-    return NULL;
+  bool success = false;
+
+  /* Validation Check */
+  if (*dir == '\0') return false;
+  if (
+    strcmp (dir, ".") == 0 || 
+    strcmp (dir, "..") == 0)
+    return false;
+
+
   strlcpy (s, dir, strlen(dir) + 1);
   if ((dir_ = find_end_dir (s, &filename, true)))
     {
       dir_close (dir_);
-      // printf ("success!\n");
-      return true;
+
+      success = true;
     }
-  else
-    return false;
+
+  return success;
 }
 
 static bool readdir (int fd, char *name)

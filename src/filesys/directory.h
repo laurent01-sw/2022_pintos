@@ -37,4 +37,6 @@ bool dir_readdir (struct dir *, char name[NAME_MAX + 1]);
 
 struct dir * find_end_dir (const char *name, char **filename, bool create); 
 struct inode * dir_to_inode (const struct dir *dir); 
+struct inode* dir_get_parent_inode (struct dir* dir);
+
 #endif /* filesys/directory.h */

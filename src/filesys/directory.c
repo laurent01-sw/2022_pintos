@@ -127,7 +127,9 @@ dir_lookup (const struct dir *dir, const char *name,
 {
   struct dir_entry e;
 
-  ASSERT (dir != NULL);
+  // ASSERT (dir != NULL);
+  if (dir == NULL) return false;
+
   ASSERT (name != NULL);
 
   // printf ("(%s) dir : %p, name : %s\n" ,__func__, dir, name);
@@ -161,6 +163,10 @@ dir_add (struct dir *dir, const char *name, block_sector_t inode_sector)
 
   /* Check that NAME is not in use. */
   if (lookup (dir, name, NULL, NULL))
+    goto done;
+
+  /* Set parent */
+  if (!inode_set_parent (inode_get_inumber (dir_get_inode (dir)), inode_sector))
     goto done;
 
   /* Set OFS to offset of free slot.
@@ -353,4 +359,15 @@ struct inode*
 dir_to_inode (const struct dir *dir)
 {
   return dir->inode;
+}
+
+
+
+struct inode* 
+dir_get_parent_inode (struct dir* dir)
+{
+  if (dir == NULL) return NULL;
+  
+  block_sector_t sector = inode_get_parent (dir_get_inode (dir));
+  return inode_open (sector);
 }

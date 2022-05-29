@@ -63,6 +63,10 @@ filesys_create (const char *name, off_t initial_size)
   char s[strlen(name) + 1];
   char *filename = NULL;
 
+  /* These two must be prohibited. */
+  if (strcmp (name, ".") == 0) return false;
+  if (strcmp (name, "..") == 0) return false;
+
   strlcpy (s, name, strlen(name) + 1);
   dir = find_end_dir (s, &filename, false);
   
@@ -100,26 +104,49 @@ filesys_open (const char *name)
   char *filename = NULL;
   struct inode *inode = NULL;
 
+  struct dir *cur_dir = thread_current ()->current_dir;
+
   strlcpy (s, name, strlen(name) + 1);
 
   if (*name == '\0')
     return NULL;
 
-  // printf ("%s\n",s);
+  /* Case 1: Requests Root */
   if (!strcmp(s, "/"))
-    return file_open(dir_to_inode (dir_open_root ()));
+    return file_open (dir_to_inode (dir_open_root ()));
 
-  dir = find_end_dir (s, &filename, false);
+  /* Case 2: Requests Parent */
+  if (
+    strcmp (name, "..") == 0
+    && !inode_is_removed (dir_to_inode (cur_dir))
+    )
+    {
+      inode = dir_get_parent_inode (cur_dir); 
+      inode_close (inode);
+    }
 
-  //printf ("(%s) tid : %d, dir : %p, filename : %s\n", __func__, 
-  //		  thread_current ()->tid, dir, filename);
+  /* Case 3: Requests Self */
+  else if (strcmp (name, ".") == 0)
+    {
+      inode = dir_to_inode (cur_dir); // here?
+    }
   
-  if (dir != NULL)
-    dir_lookup (dir, filename, &inode);
+  /* Case 4: Requests Arbitrary */
+  else {
 
-  dir_close (dir);
+    dir = find_end_dir (s, &filename, false);
+    
+    if (dir != NULL)
+    {
+      dir_lookup (dir, filename, &inode);
+      dir_close (dir);
+    }
+  }
 
   if (inode == NULL)
+    return NULL;
+
+  if (inode_is_removed (inode))
     return NULL;
 
   return file_open (inode);

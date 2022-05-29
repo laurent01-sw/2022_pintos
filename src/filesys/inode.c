@@ -12,7 +12,7 @@
 
 /* Identifies an inode. */
 #define INODE_MAGIC 0x494e4f44
-#define DIRECT_BLOCK_ENTRIES 123
+#define DIRECT_BLOCK_ENTRIES 122
 #define INDIRECT_BLOCK_ENTRIES (DIRECT_BLOCK_ENTRIES + 128)
 #define DINDIRECT_BLOCK_ENTRIES (INDIRECT_BLOCK_ENTRIES + (128 * 128))
 
@@ -23,6 +23,9 @@ struct inode_disk
     off_t length;                       /* File size in bytes. */
     unsigned magic;                     /* Magic number. */
     unsigned isdir;
+
+    block_sector_t parent;
+
     /* Extensible File Support */
     block_sector_t direct_map_table[DIRECT_BLOCK_ENTRIES];
     block_sector_t indirect_block_sec;
@@ -153,6 +156,9 @@ inode_create (block_sector_t sector, off_t length, bool isdir)
       disk_inode->magic = INODE_MAGIC;
       
       sector_len = sectors;
+
+      /* Set default parent to root. For now. */
+      disk_inode->parent = ROOT_DIR_SECTOR; 
   
       //printf ("s_length : %d, SI : %d, DI : %d\n"
 	//	      , sectors, sectors > DIRECT_BLOCK_ENTRIES
@@ -966,4 +972,26 @@ bool
 inode_is_removed (struct inode *arg_node)
 {
   return arg_node->removed;
+}
+
+block_sector_t
+inode_get_parent (const struct inode *_inode)
+{
+  return _inode->data.parent;
+}
+
+bool
+inode_set_parent (block_sector_t parent, block_sector_t child)
+{
+  /* Open the child */
+  struct inode* _inode = inode_open (child);
+
+  if (!_inode)
+    return false;
+
+  _inode->data.parent = parent;
+  
+  inode_close(_inode);
+
+  return true;
 }
