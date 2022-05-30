@@ -986,7 +986,7 @@ inode_set_parent (block_sector_t parent, block_sector_t child)
   /* Open the child */
   struct inode* _inode = inode_open (child);
 
-  if (!_inode)
+  if (_inode == NULL)
     return false;
 
   _inode->data.parent = parent;

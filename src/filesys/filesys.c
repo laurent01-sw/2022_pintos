@@ -164,6 +164,9 @@ filesys_remove (const char *name)
   char s[strlen(name) + 1];
   char *filename = NULL;
 
+  if (strcmp (name, ".") == 0) return false;
+  if (strcmp (name, "..") == 0) return false;
+
   strlcpy (s, name, strlen(name) + 1);
   dir = find_end_dir (s, &filename, false);
 

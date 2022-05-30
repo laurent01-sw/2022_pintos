@@ -167,7 +167,9 @@ dir_add (struct dir *dir, const char *name, block_sector_t inode_sector)
 
   /* Set parent */
   if (!inode_set_parent (inode_get_inumber (dir_get_inode (dir)), inode_sector))
+  {
     goto done;
+  }
 
   /* Set OFS to offset of free slot.
      If there are no free slots, then it will be set to the
@@ -215,17 +217,20 @@ dir_remove (struct dir *dir, const char *name)
   inode = inode_open (e.inode_sector);
   if (inode == NULL)
     goto done;
-  
+
   /* Prevent directory that have entries from removing */
   if (inode_isdir (inode))
     {
-      off_t dir_ofs; struct dir_entry e_ite;
-      for (dir_ofs = 0; inode_read_at (inode, &e_ite, sizeof e_ite, dir_ofs) == sizeof e;
-	dir_ofs += sizeof e_ite)
-	{
-	  if (e_ite.in_use)
-	    goto done;
-	}
+      off_t dir_ofs; 
+      struct dir_entry e_ite;
+      
+      for (dir_ofs = 0; 
+        inode_read_at (inode, &e_ite, sizeof e_ite, dir_ofs) == sizeof e;
+	      dir_ofs += sizeof e_ite)
+        {
+          if (e_ite.in_use)
+            goto done;
+        }
     }
 
   /* Erase directory entry. */
@@ -268,90 +273,83 @@ find_end_dir (const char *name, char **filename, bool create)
   /* Parse the path, need to implement relative path function */     
   struct dir *dir = (*name == '/' || !(thread_current ()->current_dir)) 
 	  ? dir_open_root () : dir_reopen (thread_current ()->current_dir), *next_dir;
+  
   struct inode *inode = NULL;
   block_sector_t inode_sector = 0;
+
   char *s = name;
-  char *token, *save_ptr;                                            
-  uint32_t depth = 0, i = 0;                                   
+  char *token, *save_ptr;       
+
+  uint32_t depth = 0, i = 0;
 
   const char *p = name;
   if (*p != '/') depth++;  
-  for (p = name; *p != '\0'; p++)                                    
-    // if (*p == '/') depth++;                               
-    if (*p == '/' && *(p + 1) != '\0' && *(p + 1) != '/') depth++;                               
-  /*
-  if (thread_current ()->current_dir)
-    printf ("tid : %d rootdir : %d, currentdir : %d, currentdir_pointer : %p, name : %s depth : %d\n"
-		  ,thread_current ()->tid,
-		  1 ,inode_get_inumber(thread_current ()->current_dir->inode), 
-		  thread_current ()->current_dir, s, depth);
-  if (!thread_current ()->current_dir)
-    printf ("tid : %d rootdir : %d, currentdir : %d, name : %s depth : %d\n"
-		  ,thread_current ()->tid,
-		  1 ,0, s, depth);
-  */
-  char *parsed_dir [depth];                                          
+  for (p = name; *p != '\0'; p++)                                                           
+    if (*p == '/' && *(p + 1) != '\0' && *(p + 1) != '/') 
+      depth++;                               
+
+  char *parsed_dir [depth];        
+
   for (token = strtok_r (s, "/", &save_ptr); token != NULL;          
       token = strtok_r (NULL, "/", &save_ptr))                     
     {                                                                
       parsed_dir[i++] = token;                                       
       // printf ("'%d : %s' ", i - 1, token);                    
       if (dir_lookup (dir, token, &inode) && create && i == depth && inode)
-	return NULL;	      
+	      return NULL;	      
       
       if (!inode)
-	{ 
-	  //printf ("no entry found!\n");
-	  if (create && i == depth)
-	    {
-	      //printf ("create directory\n");
-	      free_map_allocate (1, &inode_sector);
-	      dir_create (inode_sector, 16);
-	      if (dir_add (dir, token, inode_sector))
-		{
-	      	  inode = inode_open (inode_sector);
-	      	  return dir_open (inode);
-	        }
-	      else
-		{
-		  free_map_release (inode_sector, 1);
-		  return NULL;
-		}
-	    }
-	  else
-	    {
-	      *filename = token;
-	      //printf ("filename : %s\n", *filename);
-	      return dir;
-	    }
-	}
+        { 
+          // printf ("(%s) no entry found for (%s)\n", __func__, token);
+          if (create && i == depth)
+            {
 
-      if (inode_isdir(inode))                                         
+              free_map_allocate (1, &inode_sector);
+              dir_create (inode_sector, 16);
+              if (dir_add (dir, token, inode_sector))
+                {
+                  inode = inode_open (inode_sector);
+                  return dir_open (inode);
+                }
+              else
+                {
+                  free_map_release (inode_sector, 1);
+                  return NULL;
+                }
+            }
+          else
+            {
+              *filename = token;
+              return dir;
+            }
+        }
+
+      if (inode_isdir (inode))                                         
         {                                                            
-	  if (i == depth)
-	    {
-	      *filename = token;
-	      //printf ("return dir\n");
-	      return dir;
-	    }
+          if (i == depth)
+            {
+              *filename = token;
+              return dir;
+            }
+
           next_dir = dir_open (inode);                                    
-	  dir_close (dir);
-	  dir = next_dir;
-	  //printf ("go to next dir\n");
+          dir_close (dir);
+          dir = next_dir;
+	  
         }                                                            
       else /* Check whether regular File is in the middle */         
         {                                                            
           if (i != depth)                                            
             {                                                        
               printf ("(%s) Regular File in the middle of the path!\n",__func__);
-  	      printf ("name : %s, current depth : %d, current elem : %s\n",name, i, token);
-	      return NULL;
+              printf ("name : %s, current depth : %d, current elem : %s\n",name, i, token);
+              return NULL;
             }                                                        
-	  else
-	    *filename = token;
+          else
+            *filename = token;
         }                                                            
     }                                                                
-  // printf ("\n");
+
   return dir;
 }
 

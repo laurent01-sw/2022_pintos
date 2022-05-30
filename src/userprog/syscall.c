@@ -468,35 +468,38 @@ static bool chdir (const char *dir)
       return true;
     }
 
+  if (strcmp (dir, "..") == 0)
+    {
+      struct inode *par_dir_inode = dir_get_parent_inode (thread_current ()->current_dir);
+      
+      if (par_dir_inode == NULL) return false;
+
+      dir_close (thread_current ()->current_dir);
+
+      thread_current ()->current_dir = dir_open (par_dir_inode);
+      return true;
+    }
+
   strlcpy (s, dir, strlen(dir) + 1);
   dir_ = find_end_dir (s, &filename, false);
 
   if (dir_ != NULL)
     {
-      if (strcmp (dir, "..") == 0)
+      dir_lookup (dir_, filename, &inode);
+      if (inode != NULL)
         {
-          struct inode *par_dir_inode = dir_get_parent_inode (dir_);
+          next_dir_ = dir_open (inode);
+          dir_close (dir_);
           
-          thread_current ()->current_dir = dir_open (par_dir_inode);
+          dir_ = next_dir_;
+          thread_current ()->current_dir = dir_ ? dir_ : thread_current ()->current_dir; 
+
           return true;
         }
       else
-        {
-          dir_lookup (dir_, filename, &inode);
-          if (inode != NULL)
-            {
-              next_dir_ = dir_open (inode);
-              dir_close (dir_);
-              
-              dir_ = next_dir_;
-              thread_current ()->current_dir = dir_ ? dir_ : thread_current ()->current_dir; 
-
-              return true;
-            }
-          else
-            return false;
-        }
+        return false;
     }
+    
 
   return false; 
 }
