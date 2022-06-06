@@ -132,11 +132,15 @@ dir_lookup (const struct dir *dir, const char *name,
 
   ASSERT (name != NULL);
 
+  inode_lock (dir_get_inode ((struct dir *) dir));
+
   // printf ("(%s) dir : %p, name : %s\n" ,__func__, dir, name);
   if (lookup (dir, name, &e, NULL))
     *inode = inode_open (e.inode_sector);
   else
     *inode = NULL;
+
+  inode_unlock (dir_get_inode ((struct dir *) dir));
 
   return *inode != NULL;
 }
@@ -157,9 +161,11 @@ dir_add (struct dir *dir, const char *name, block_sector_t inode_sector)
   ASSERT (dir != NULL);
   ASSERT (name != NULL);
 
+  inode_lock (dir_get_inode (dir));
+
   /* Check NAME for validity. */
   if (*name == '\0' || strlen (name) > NAME_MAX)
-    return false;
+    goto done;
 
   /* Check that NAME is not in use. */
   if (lookup (dir, name, NULL, NULL))
@@ -192,6 +198,7 @@ dir_add (struct dir *dir, const char *name, block_sector_t inode_sector)
 	//	  ,__func__, e.inode_sector, e.name, e.in_use);
 
  done:
+  inode_unlock (dir_get_inode (dir));
   return success;
 }
 
@@ -209,9 +216,13 @@ dir_remove (struct dir *dir, const char *name)
   ASSERT (dir != NULL);
   ASSERT (name != NULL);
 
+  inode_lock (dir_get_inode (dir));
+
   /* Find directory entry. */
   if (!lookup (dir, name, &e, &ofs))
     goto done;
+
+  // printf ("dir_remove, Found: %s\n", name);
 
   /* Open inode. */
   inode = inode_open (e.inode_sector);
@@ -244,6 +255,8 @@ dir_remove (struct dir *dir, const char *name)
 
  done:
   inode_close (inode);
+
+  inode_unlock (dir_get_inode (dir));
   return success;
 }
 
@@ -254,6 +267,7 @@ bool
 dir_readdir (struct dir *dir, char name[NAME_MAX + 1])
 {
   struct dir_entry e;
+  inode_lock (dir_get_inode (dir));
 
   while (inode_read_at (dir->inode, &e, sizeof e, dir->pos) == sizeof e) 
     {
@@ -261,9 +275,13 @@ dir_readdir (struct dir *dir, char name[NAME_MAX + 1])
       if (e.in_use)
         {
           strlcpy (name, e.name, NAME_MAX + 1);
+          
+          inode_unlock (dir_get_inode (dir));
           return true;
         } 
     }
+
+  inode_unlock (dir_get_inode (dir));
   return false;
 }
 
@@ -273,7 +291,7 @@ find_end_dir (const char *name, char **filename, bool create)
   /* Parse the path, need to implement relative path function */     
   struct dir *dir = (*name == '/' || !(thread_current ()->current_dir)) 
 	  ? dir_open_root () : dir_reopen (thread_current ()->current_dir), *next_dir;
-  
+
   struct inode *inode = NULL;
   block_sector_t inode_sector = 0;
 

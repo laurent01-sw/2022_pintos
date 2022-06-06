@@ -49,6 +49,8 @@ struct inode
     bool removed;                       /* True if deleted, false otherwise. */
     int deny_write_cnt;                 /* 0: writes ok, >0: deny writes. */
     struct inode_disk data;             /* Inode content. */
+
+    struct lock ilock;                  /* Lock, per inode. */
   };
 
 struct list bh_list;
@@ -339,7 +341,6 @@ inode_open (block_sector_t sector)
   struct list_elem *e;
   struct inode *inode;
 
-
   /* Check whether this inode is already open. */
   for (e = list_begin (&open_inodes); e != list_end (&open_inodes);
        e = list_next (e)) 
@@ -367,6 +368,8 @@ inode_open (block_sector_t sector)
   inode->deny_write_cnt = 0;
   inode->removed = false;
   block_read (fs_device, inode->sector, &inode->data);
+
+  lock_init (&inode->ilock);
  //         printf ("(%s) tid : %d, sector : %d, length : %d, isdir : %d\n",
 //		  __func__, thread_current ()->tid, inode->sector
 //		  ,inode->data.length, inode->data.isdir);
@@ -408,8 +411,7 @@ inode_setdir (struct inode *inode)
 /* Closes INODE and writes it to disk.
    If this was the last reference to INODE, frees its memory.
    If INODE was also a removed inode, frees its blocks. */
-void
-inode_close (struct inode *inode) 
+void inode_close(struct inode *inode)
 {
   uint32_t i, j;
   struct buffer_head *b_head, *ib_head;
@@ -418,133 +420,109 @@ inode_close (struct inode *inode)
   /* Ignore null pointer. */
   if (inode == NULL)
     return;
-  
-          //printf ("(%s) tid : %d, sector : %d, length : %d, isdir : %d\n",
-	//	  __func__, thread_current ()->tid, inode->sector
-	//	  ,inode->data.length, inode->data.isdir);
-  
+
+  // printf ("(%s) tid : %d, sector : %d, length : %d, isdir : %d\n",
+  //	  __func__, thread_current ()->tid, inode->sector
+  //	  ,inode->data.length, inode->data.isdir);
+
   /* Release resources if this was the last opener. */
   if (--inode->open_cnt == 0)
+  {
+    /* Remove from inode list and release lock. */
+    block_write(fs_device, inode->sector, &inode->data);
+    list_remove(&inode->elem);
+
+    /* Deallocate blocks if removed. */
+    if (inode->removed)
     {
-      /* Remove from inode list and release lock. */
-      block_write (fs_device, inode->sector, &inode->data);
-      list_remove (&inode->elem);
- 
-      /* Deallocate blocks if removed. */
-      if (inode->removed) 
+      /* Free Disk Inode */
+      free_map_release(inode->sector, 1);
+      /* Free Data Blocks */
+      disk_inode = &inode->data;
+      if (disk_inode->double_indirect_block_sec)
+      /* Free Dindirect Block Set and its Pointer blocks*/
+      {
+        b_head = find_bcache_entry(disk_inode->double_indirect_block_sec);
+        page_pos = (uint32_t *)b_head->b_start_page;
+        for (i = 0; *(page_pos + i) != 0; j++)
         {
-	  /* Free Disk Inode */
-          free_map_release (inode->sector, 1);
-	  /* Free Data Blocks */
-	  disk_inode = &inode->data;
-	  if (disk_inode->double_indirect_block_sec)
-	  /* Free Dindirect Block Set and its Pointer blocks*/
-	    {
-	      b_head = find_bcache_entry (disk_inode->double_indirect_block_sec);
-	      page_pos = (uint32_t *) b_head->b_start_page;                      
-	      for (i = 0; *(page_pos + i) != 0; j++)                          
-  	        {                                                                
-    		  ib_head = find_bcache_entry (*(page_pos + i));                 
-    		  ipage_pos = (uint32_t *) ib_head->b_start_page;                 
-    		  for (j = 0; *(ipage_pos + j) != 0; j++)              
-      		    free_map_release (*(ipage_pos + j), 1); 
-		  memset (ipage_pos, 0, 512);
-  		} 
-	      memset (page_pos, 0, 512);
-      	      free_map_release (disk_inode->double_indirect_block_sec, 1); 
-	    }
-	  if (disk_inode->indirect_block_sec)
-	  /* Free Indirect Block Set and its Pointer blocks*/
-	    {
-	      b_head = find_bcache_entry (disk_inode->indirect_block_sec);
-	      page_pos = (uint32_t *) b_head->b_start_page;
-	      for (i = 0; i < INDIRECT_BLOCK_ENTRIES && *(page_pos + i) != 0; i++)
-      		free_map_release (*(page_pos + i), 1);
-	      memset (page_pos, 0, 512);
-      	      free_map_release (disk_inode->indirect_block_sec, 1); 
-	    }
-	  if (disk_inode->direct_map_table[0])
-	  /* Free Direct Block Set */
-	      for (i = 0; i < DIRECT_BLOCK_ENTRIES 
-		&& disk_inode->direct_map_table[i] != 0; i++)
-      		free_map_release (disk_inode->direct_map_table[i], 1);
-	  memset(disk_inode, 0, 512);
+          ib_head = find_bcache_entry(*(page_pos + i));
+          ipage_pos = (uint32_t *)ib_head->b_start_page;
+          for (j = 0; *(ipage_pos + j) != 0; j++)
+            free_map_release(*(ipage_pos + j), 1);
+          memset(ipage_pos, 0, 512);
         }
-      free (inode); 
+        memset(page_pos, 0, 512);
+        free_map_release(disk_inode->double_indirect_block_sec, 1);
+      }
+      if (disk_inode->indirect_block_sec)
+      /* Free Indirect Block Set and its Pointer blocks*/
+      {
+        b_head = find_bcache_entry(disk_inode->indirect_block_sec);
+        page_pos = (uint32_t *)b_head->b_start_page;
+        for (i = 0; i < INDIRECT_BLOCK_ENTRIES && *(page_pos + i) != 0; i++)
+          free_map_release(*(page_pos + i), 1);
+        memset(page_pos, 0, 512);
+        free_map_release(disk_inode->indirect_block_sec, 1);
+      }
+      if (disk_inode->direct_map_table[0])
+        /* Free Direct Block Set */
+        for (i = 0; i < DIRECT_BLOCK_ENTRIES && disk_inode->direct_map_table[i] != 0; i++)
+          free_map_release(disk_inode->direct_map_table[i], 1);
+      memset(disk_inode, 0, 512);
     }
+    free(inode);
+  }
 }
 
 /* Marks INODE to be deleted when it is closed by the last caller who
    has it open. */
-void
-inode_remove (struct inode *inode) 
+void inode_remove(struct inode *inode)
 {
-  ASSERT (inode != NULL);
+  ASSERT(inode != NULL);
   inode->removed = true;
 }
 
 /* Reads SIZE bytes from INODE into BUFFER, starting at position OFFSET.
    Returns the number of bytes actually read, which may be less
    than SIZE if an error occurs or end of file is reached. */
-off_t
-inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset) 
+off_t inode_read_at(struct inode *inode, void *buffer_, off_t size, off_t offset)
 {
   uint8_t *buffer = buffer_;
   off_t bytes_read = 0;
   // uint8_t *bounce = NULL;
   struct buffer_head *b_head = NULL;
 
-  while (size > 0) 
-    {
-      /* Disk sector to read, starting byte offset within sector. */
-      block_sector_t sector_idx = byte_to_sector (inode, offset);
-      // printf ("(%s) sector_idx : %d\n",__func__, sector_idx);
-      int sector_ofs = offset % BLOCK_SECTOR_SIZE;
+  while (size > 0)
+  {
+    /* Disk sector to read, starting byte offset within sector. */
+    block_sector_t sector_idx = byte_to_sector(inode, offset);
+    // printf ("(%s) sector_idx : %d\n",__func__, sector_idx);
+    int sector_ofs = offset % BLOCK_SECTOR_SIZE;
 
-      /* Bytes left in inode, bytes left in sector, lesser of the two. */
-      off_t inode_left = inode_length (inode) - offset;
-      int sector_left = BLOCK_SECTOR_SIZE - sector_ofs;
-      int min_left = inode_left < sector_left ? inode_left : sector_left;
+    /* Bytes left in inode, bytes left in sector, lesser of the two. */
+    off_t inode_left = inode_length(inode) - offset;
+    int sector_left = BLOCK_SECTOR_SIZE - sector_ofs;
+    int min_left = inode_left < sector_left ? inode_left : sector_left;
 
-      /* Number of bytes to actually copy out of this sector. */
-      int chunk_size = size < min_left ? size : min_left;
-      if (chunk_size <= 0)
-        break;	
-      /* Find Buffer Cache Entry on the list */
-      b_head = find_bcache_entry (sector_idx);
-      
-      ASSERT (b_head != NULL);
-      
-      memcpy (buffer + bytes_read, b_head->b_start_page + sector_ofs, chunk_size);
-      
-            /*
-      if (sector_ofs == 0 && chunk_size == BLOCK_SECTOR_SIZE)
-        {
-          // Read full sector directly into caller's buffer. 
-          block_read (fs_device, sector_idx, buffer + bytes_read);
-        }
-      else 
-        {
-          // Read sector into bounce buffer, then partially copy
-          //   into caller's buffer. 
-          if (bounce == NULL) 
-            {
-              bounce = malloc (BLOCK_SECTOR_SIZE);
-              if (bounce == NULL)
-                break;
-            }
-          block_read (fs_device, sector_idx, bounce);
-          memcpy (buffer + bytes_read, bounce + sector_ofs, chunk_size);
-        }
-      */
+    /* Number of bytes to actually copy out of this sector. */
+    int chunk_size = size < min_left ? size : min_left;
+    if (chunk_size <= 0)
+      break;
+    /* Find Buffer Cache Entry on the list */
+    b_head = find_bcache_entry(sector_idx);
 
-      /* Advance. */
-      size -= chunk_size;
-      offset += chunk_size;
-      bytes_read += chunk_size;
-    }
+    ASSERT(b_head != NULL);
+
+    memcpy(buffer + bytes_read, b_head->b_start_page + sector_ofs, chunk_size);
+
+    /* Advance. */
+    size -= chunk_size;
+    offset += chunk_size;
+    bytes_read += chunk_size;
+  }
   // free (bounce);
-	
+
   return bytes_read;
 }
 
@@ -553,16 +531,15 @@ inode_read_at (struct inode *inode, void *buffer_, off_t size, off_t offset)
    less than SIZE if end of file is reached or an error occurs.
    (Normally a write at end of file would extend the inode, but
    growth is not yet implemented.) */
-off_t
-inode_write_at (struct inode *inode, const void *buffer_, off_t size,
-                off_t offset) 
+off_t inode_write_at(struct inode *inode, const void *buffer_, off_t size,
+                     off_t offset)
 {
   const uint8_t *buffer = buffer_;
   off_t bytes_written = 0;
   // uint8_t *bounce = NULL;
   struct buffer_head *b_head = NULL, *ib_head = NULL;
   struct inode_disk *disk_inode = NULL;
-  static char zeros [BLOCK_SECTOR_SIZE];
+  static char zeros[BLOCK_SECTOR_SIZE];
 
   if (inode->deny_write_cnt)
     return 0;
@@ -572,285 +549,279 @@ inode_write_at (struct inode *inode, const void *buffer_, off_t size,
 
   /* Support Extending File */
   if (write_end > old_length - 1)
+  {
+    block_sector_t old_sectors = bytes_to_sectors(old_length),
+                   new_sectors = bytes_to_sectors(write_end),
+                   old_sector_pos = 0, new_sector_pos = 0,
+                   i_old_sector_pos = 0, i_new_sector_pos = 0;
+    uint32_t *page_pos, *ipage_pos,
+        res_dicount, p_dicount, d_dicount, d_icount, d_dcount, sentinel;
+    bool res_diblock = true, di_pblock = true, di_dblock = true, i_pblock = true,
+         i_dblock = true, d_dblock = true;
+
+    disk_inode = &inode->data;
+    if (new_sectors > INDIRECT_BLOCK_ENTRIES)
     {
-      block_sector_t old_sectors = bytes_to_sectors (old_length), 
-	     new_sectors = bytes_to_sectors (write_end),
-	     old_sector_pos = 0, new_sector_pos = 0,
-	     i_old_sector_pos = 0, i_new_sector_pos = 0;
-      uint32_t *page_pos, *ipage_pos, 
-	       res_dicount, p_dicount, d_dicount, d_icount, d_dcount, sentinel;
-      bool res_diblock = true, di_pblock = true, di_dblock = true, i_pblock = true,
-	   i_dblock = true, d_dblock = true;
-  
-      disk_inode = &inode->data;
-      if (new_sectors > INDIRECT_BLOCK_ENTRIES)
-	{
-	  //printf ("DI : old_sectors : %d, new_sectors : %d\n", old_sectors, new_sectors);
-          if (old_sectors <= INDIRECT_BLOCK_ENTRIES)
-	    {
-	      //printf ("extend to double indirect pointer block capacity!\n");
-	      ASSERT (disk_inode->double_indirect_block_sec == 0)
-	      if (!free_map_allocate (1, &disk_inode->double_indirect_block_sec))
-	        return 0;
-	      else
-		block_write (fs_device, disk_inode->double_indirect_block_sec, zeros);
-	    }
-	  b_head = find_bcache_entry (disk_inode->double_indirect_block_sec);
-	  page_pos = (uint32_t *) b_head->b_start_page;
+      // printf ("DI : old_sectors : %d, new_sectors : %d\n", old_sectors, new_sectors);
+      if (old_sectors <= INDIRECT_BLOCK_ENTRIES)
+      {
+        // printf ("extend to double indirect pointer block capacity!\n");
+        ASSERT(disk_inode->double_indirect_block_sec == 0)
+        if (!free_map_allocate(1, &disk_inode->double_indirect_block_sec))
+          return 0;
+        else
+          block_write(fs_device, disk_inode->double_indirect_block_sec, zeros);
+      }
+      b_head = find_bcache_entry(disk_inode->double_indirect_block_sec);
+      page_pos = (uint32_t *)b_head->b_start_page;
 
-	  /* Allocate Indirect Pointer Block Set */
-	  old_sector_pos = (old_sectors - INDIRECT_BLOCK_ENTRIES) == 0 ? 0:
-		  (old_sectors - INDIRECT_BLOCK_ENTRIES) / 128;
-	  new_sector_pos = (new_sectors - INDIRECT_BLOCK_ENTRIES) / 128;
-	  
-	  for (; old_sector_pos <= new_sector_pos; old_sector_pos++)
-	    {
-	      if (!*(page_pos + old_sector_pos))
-		{ 
-		  if(!free_map_allocate (1, page_pos + old_sector_pos))
-	            {
-		      di_pblock = res_diblock = false;
-		      goto done;
-		    }
-	          else 
-		    { 
-	              block_write (fs_device, *(page_pos + old_sector_pos), zeros);
-	  //      	printf ("[DIPOINTER] upper_block : %d "
-	//				"os_pos : %d, ns_pos : %d, alloc_sector : %d\n"
-			    //,disk_inode->double_indirect_block_sec 
-			    //,old_sector_pos ,new_sector_pos 
-			    //,*(page_pos + old_sector_pos));
-		    }
-		}
-	    }
-          b_head->b_state |= (1UL << BH_Dirty); 
-	  
-	  /* Fill Up Indirect Pointer Block Set */
-	  old_sector_pos = (old_sectors - INDIRECT_BLOCK_ENTRIES) == 0 ? 0:
-		  (old_sectors - INDIRECT_BLOCK_ENTRIES) / 128;
-	  new_sector_pos = (new_sectors - INDIRECT_BLOCK_ENTRIES) / 128;
-	  //printf ("[DIPOINTER] os_pos : %d, ns_pos : %d\n"
-	//		      ,old_sector_pos ,new_sector_pos);
-	  i_old_sector_pos = old_sectors - old_sector_pos * 128 - INDIRECT_BLOCK_ENTRIES;
-	  i_new_sector_pos = new_sectors - new_sector_pos * 128 - INDIRECT_BLOCK_ENTRIES;
-	  sentinel = i_new_sector_pos > i_old_sector_pos ? i_new_sector_pos - i_old_sector_pos:
-		 	128; 
-	  for (;old_sector_pos <= new_sector_pos; old_sector_pos++)
-	    {
-	      ib_head = find_bcache_entry (*(page_pos + old_sector_pos));
-	      ipage_pos = (uint32_t *) ib_head->b_start_page;
-	      i_old_sector_pos = old_sectors - old_sector_pos * 128 - INDIRECT_BLOCK_ENTRIES;
-	      i_new_sector_pos = new_sectors - new_sector_pos * 128 - INDIRECT_BLOCK_ENTRIES;
-	      sentinel = i_new_sector_pos > i_old_sector_pos ? i_new_sector_pos: 128; 
-	      for (; i_old_sector_pos < sentinel; i_old_sector_pos++)
-		{
-		  if (!*(ipage_pos + i_old_sector_pos))
-		  {
-	      	    if (!free_map_allocate (1, ipage_pos + i_old_sector_pos))
-	              {
-			ASSERT (false);
-		        di_dblock = di_pblock = res_diblock = false;
-		        goto done;
-		      }
-	      	    else 
-		      {
-	                block_write (fs_device, *(ipage_pos + i_old_sector_pos), zeros);
-	                //printf ("[DIDATA] upper_block : %d ios_pos : %d, ins_pos : %d"
-			//		" alloc_sector : %d\n"
-			//	,*(page_pos + old_sector_pos)
-		          //      ,i_old_sector_pos, i_new_sector_pos 
-			    //    ,*(ipage_pos + i_old_sector_pos));
-		      }
-		  }
-		}
-              ib_head->b_state |= (1UL << BH_Dirty); 
-	    }
-	}
+      /* Allocate Indirect Pointer Block Set */
+      old_sector_pos = (old_sectors - INDIRECT_BLOCK_ENTRIES) == 0 ? 0 : (old_sectors - INDIRECT_BLOCK_ENTRIES) / 128;
+      new_sector_pos = (new_sectors - INDIRECT_BLOCK_ENTRIES) / 128;
 
-      if (new_sectors > DIRECT_BLOCK_ENTRIES && old_sectors < INDIRECT_BLOCK_ENTRIES)
-	{
-	  //printf ("SI : old_sectors : %d, new_sectors : %d\n", old_sectors, new_sectors);
-	  if (old_sectors <= DIRECT_BLOCK_ENTRIES)
-	    {
-	      ASSERT (disk_inode->indirect_block_sec == 0)
-	      if (!free_map_allocate (1, &disk_inode->indirect_block_sec))
-		{
-		  i_pblock = di_dblock = di_pblock = res_diblock = false;
-		  goto done;
-		}
-	      else
-		block_write (fs_device, disk_inode->indirect_block_sec, zeros);
-	    }
-	  b_head = find_bcache_entry (disk_inode->indirect_block_sec);
-	  page_pos = (uint32_t *) b_head->b_start_page;
-	  sentinel = new_sectors - old_sectors < 128 ? 
-		  (new_sectors - DIRECT_BLOCK_ENTRIES) % 129: 128;
-	  d_icount = old_sectors < DIRECT_BLOCK_ENTRIES ? 0
-		  : (old_sectors - DIRECT_BLOCK_ENTRIES) % 128;
-	  for (; d_icount < sentinel; d_icount++)
-	    {
-	      if (!free_map_allocate (1, page_pos + d_icount))
-		{
-		  i_dblock = i_pblock = di_dblock = di_pblock = res_diblock = false;
-		  goto done;
-		}
-	      else {
-		block_write (fs_device, *(page_pos + d_icount), zeros);
-	     //   printf ("d_icount : %d, sentinel : %d, alloc_sector : %d\n", d_icount, 
-	//		      sentinel
-	//		      ,*(page_pos + d_icount));
-	      }
-	    }
-          b_head->b_state |= (1UL << BH_Dirty); 
-	}
-      if (old_sectors < DIRECT_BLOCK_ENTRIES)
-	{
-	  //printf ("DD : old_sectors : %d, new_sectors : %d\n", old_sectors, new_sectors);
-	  sentinel = new_sectors > DIRECT_BLOCK_ENTRIES ? 
-		  DIRECT_BLOCK_ENTRIES : new_sectors;
-          for (d_dcount = old_sectors; d_dcount < sentinel; d_dcount++)
-	    {
-	      if (!free_map_allocate (1, &disk_inode->direct_map_table[d_dcount]))
-		{
-		  d_dblock = i_dblock = i_pblock = di_dblock = di_pblock = res_diblock = false;
-		  goto done;
-		}
-	      else {
-		block_write (fs_device, disk_inode->direct_map_table[d_dcount], zeros);
-	    //    printf ("d_dcount : %d, sentinel : %d, alloc_sector : %d\n", d_dcount, 
-	//		      sentinel
-	//		      ,disk_inode->direct_map_table[d_dcount]);
-	      }
-	    }
-	}
-        done: /* Reclaim Allocated Blocks at the failure case */
-        if (!res_diblock)
-	  {
-	    printf ("Stage 1\n");
-	    b_head = find_bcache_entry (disk_inode->double_indirect_block_sec); 
-	    page_pos = (uint32_t *) b_head->b_start_page;                       
-    	    sentinel = new_sectors - old_sectors > 127 ? 128                 
-        	    : (new_sectors - INDIRECT_BLOCK_ENTRIES % 128);          
-    	    ib_head = find_bcache_entry (*(page_pos                          
-              		+ (old_sectors - INDIRECT_BLOCK_ENTRIES)/128));        
-    	    ipage_pos = (uint32_t *) ib_head->b_start_page;                  
-    	    for (res_dicount = (old_sectors - INDIRECT_BLOCK_ENTRIES) % 128; 
-      	    	res_dicount < sentinel; res_dicount++)                         
-              free_map_release(*(ipage_pos + res_dicount), 1);         
-	  }
-        if (!di_dblock)
-	  {
-	    printf ("Stage 2\n");
-	    b_head = find_bcache_entry (disk_inode->double_indirect_block_sec); 
-	    page_pos = (uint32_t *) b_head->b_start_page;                       
-	    for (p_dicount = DIV_ROUND_UP((old_sectors - INDIRECT_BLOCK_ENTRIES), 128);          
-   	      p_dicount < DIV_ROUND_UP((new_sectors - INDIRECT_BLOCK_ENTRIES), 128); 
-	      p_dicount++)
-  	      {                                                                                  
-    		ib_head = find_bcache_entry (*(page_pos + p_dicount));                           
-    		ipage_pos = (uint32_t *) ib_head->b_start_page;                                  
-    		sentinel = new_sectors - (old_sectors + p_dicount * 128) < 128 ?                     
-        	    (new_sectors - INDIRECT_BLOCK_ENTRIES) % 128: 128;                       
-    		for (d_dicount = 0; d_dicount < sentinel; d_dicount++)                           
-        	  free_map_release (*(ipage_pos + d_dicount), 1); 
-             }                                                                                  
-	  }
-        if (!di_pblock)
-	  {
-	    printf ("Stage 3\n");
-	    b_head = find_bcache_entry (disk_inode->double_indirect_block_sec); 
-	    page_pos = (uint32_t *) b_head->b_start_page;                       
-	    for (p_dicount = DIV_ROUND_UP((old_sectors - INDIRECT_BLOCK_ENTRIES), 128);          
-  	      p_dicount < DIV_ROUND_UP((new_sectors - INDIRECT_BLOCK_ENTRIES), 128); 
-	      p_dicount++)
-    	      free_map_release (*(page_pos + p_dicount), 1); 
-	  }
-        if (!i_dblock)
-	  {
-	    printf ("Stage 4\n");
-	    b_head = find_bcache_entry (disk_inode->indirect_block_sec);              
-	    page_pos = (uint32_t *) b_head->b_start_page;                             
-            sentinel = new_sectors - old_sectors < 128 ?                              
-        	(new_sectors - DIRECT_BLOCK_ENTRIES) % 128: 128;                  
-	    for (d_icount = (old_sectors - DIRECT_BLOCK_ENTRIES) % 128;               
-      	      d_icount < sentinel; d_icount++)                                    
-	      free_map_release (*(page_pos + d_icount), 1);
-	  }
-        if (!i_pblock)
-	  free_map_release (disk_inode->indirect_block_sec, 1);
-        if (!d_dblock)
-	  {
-	    printf ("Stage 5\n");
-            for (d_dcount = old_sectors; d_dcount < new_sectors ; d_dcount++)
-	      free_map_release (disk_inode->direct_map_table[d_dcount], 1);
-	  }
-	if (!(res_diblock && di_pblock && di_dblock && i_pblock && i_dblock && d_dblock))
-	  return 0;
-	else
-	  {
-	    disk_inode->length += (write_end - old_length + 1);
-	    block_write (fs_device, inode->sector, disk_inode);
-	  }
-    }
-
-  while (size > 0) 
-    {
-      /* Sector to write, starting byte offset within sector. */
-      block_sector_t sector_idx = byte_to_sector (inode, offset);
-      //if (sector_idx < 2 || sector_idx > 5)printf ("(%s) sector : %d\n", __func__, sector_idx);
-      int sector_ofs = offset % BLOCK_SECTOR_SIZE;
-
-      /* Bytes left in inode, bytes left in sector, lesser of the two. */
-      off_t inode_left = inode_length (inode) - offset;
-      int sector_left = BLOCK_SECTOR_SIZE - sector_ofs;
-      int min_left = inode_left < sector_left ? inode_left : sector_left;
-
-      /* Number of bytes to actually write into this sector. */
-      int chunk_size = size < min_left ? size : min_left;
-      if (chunk_size <= 0)
-        break;
-
-      /* Find Buffer Cache Entry on the list */
-      b_head = find_bcache_entry (sector_idx);
-      
-      ASSERT (b_head != NULL);
-      
-      memcpy (b_head->b_start_page + sector_ofs, buffer + bytes_written, chunk_size);
-      b_head->b_state |= (1UL << BH_Dirty); 
-
-      /*
-      if (sector_ofs == 0 && chunk_size == BLOCK_SECTOR_SIZE)
+      for (; old_sector_pos <= new_sector_pos; old_sector_pos++)
+      {
+        if (!*(page_pos + old_sector_pos))
         {
-          // Write full sector directly to disk. 
-          block_write (fs_device, sector_idx, buffer + bytes_written);
-        }
-      else 
-        {
-          // We need a bounce buffer.
-          if (bounce == NULL) 
-            {
-              bounce = malloc (BLOCK_SECTOR_SIZE);
-              if (bounce == NULL)
-                break;
-            }
-
-          // If the sector contains data before or after the chunk
-          //   we're writing, then we need to read in the sector
-          //   first.  Otherwise we start with a sector of all zeros. 
-          if (sector_ofs > 0 || chunk_size < sector_left) 
-            block_read (fs_device, sector_idx, bounce);
+          if (!free_map_allocate(1, page_pos + old_sector_pos))
+          {
+            di_pblock = res_diblock = false;
+            goto done;
+          }
           else
-            memset (bounce, 0, BLOCK_SECTOR_SIZE);
-          memcpy (bounce + sector_ofs, buffer + bytes_written, chunk_size);
-          block_write (fs_device, sector_idx, bounce);
+          {
+            block_write(fs_device, *(page_pos + old_sector_pos), zeros);
+            //      	printf ("[DIPOINTER] upper_block : %d "
+            //				"os_pos : %d, ns_pos : %d, alloc_sector : %d\n"
+            //,disk_inode->double_indirect_block_sec
+            //,old_sector_pos ,new_sector_pos
+            //,*(page_pos + old_sector_pos));
+          }
         }
-      */
+      }
+      b_head->b_state |= (1UL << BH_Dirty);
 
-      /* Advance. */
-      size -= chunk_size;
-      offset += chunk_size;
-      bytes_written += chunk_size;
+      /* Fill Up Indirect Pointer Block Set */
+      old_sector_pos = (old_sectors - INDIRECT_BLOCK_ENTRIES) == 0 ? 0 : (old_sectors - INDIRECT_BLOCK_ENTRIES) / 128;
+      new_sector_pos = (new_sectors - INDIRECT_BLOCK_ENTRIES) / 128;
+      // printf ("[DIPOINTER] os_pos : %d, ns_pos : %d\n"
+      //		      ,old_sector_pos ,new_sector_pos);
+      i_old_sector_pos = old_sectors - old_sector_pos * 128 - INDIRECT_BLOCK_ENTRIES;
+      i_new_sector_pos = new_sectors - new_sector_pos * 128 - INDIRECT_BLOCK_ENTRIES;
+      sentinel = i_new_sector_pos > i_old_sector_pos ? i_new_sector_pos - i_old_sector_pos : 128;
+      for (; old_sector_pos <= new_sector_pos; old_sector_pos++)
+      {
+        ib_head = find_bcache_entry(*(page_pos + old_sector_pos));
+        ipage_pos = (uint32_t *)ib_head->b_start_page;
+        i_old_sector_pos = old_sectors - old_sector_pos * 128 - INDIRECT_BLOCK_ENTRIES;
+        i_new_sector_pos = new_sectors - new_sector_pos * 128 - INDIRECT_BLOCK_ENTRIES;
+        sentinel = i_new_sector_pos > i_old_sector_pos ? i_new_sector_pos : 128;
+        for (; i_old_sector_pos < sentinel; i_old_sector_pos++)
+        {
+          if (!*(ipage_pos + i_old_sector_pos))
+          {
+            if (!free_map_allocate(1, ipage_pos + i_old_sector_pos))
+            {
+              ASSERT(false);
+              di_dblock = di_pblock = res_diblock = false;
+              goto done;
+            }
+            else
+            {
+              block_write(fs_device, *(ipage_pos + i_old_sector_pos), zeros);
+              // printf ("[DIDATA] upper_block : %d ios_pos : %d, ins_pos : %d"
+              //		" alloc_sector : %d\n"
+              //	,*(page_pos + old_sector_pos)
+              //      ,i_old_sector_pos, i_new_sector_pos
+              //    ,*(ipage_pos + i_old_sector_pos));
+            }
+          }
+        }
+        ib_head->b_state |= (1UL << BH_Dirty);
+      }
     }
+
+    if (new_sectors > DIRECT_BLOCK_ENTRIES && old_sectors < INDIRECT_BLOCK_ENTRIES)
+    {
+      // printf ("SI : old_sectors : %d, new_sectors : %d\n", old_sectors, new_sectors);
+      if (old_sectors <= DIRECT_BLOCK_ENTRIES)
+      {
+        ASSERT(disk_inode->indirect_block_sec == 0)
+        if (!free_map_allocate(1, &disk_inode->indirect_block_sec))
+        {
+          i_pblock = di_dblock = di_pblock = res_diblock = false;
+          goto done;
+        }
+        else
+          block_write(fs_device, disk_inode->indirect_block_sec, zeros);
+      }
+      b_head = find_bcache_entry(disk_inode->indirect_block_sec);
+      page_pos = (uint32_t *)b_head->b_start_page;
+      sentinel = new_sectors - old_sectors < 128 ? (new_sectors - DIRECT_BLOCK_ENTRIES) % 129 : 128;
+      d_icount = old_sectors < DIRECT_BLOCK_ENTRIES ? 0
+                                                    : (old_sectors - DIRECT_BLOCK_ENTRIES) % 128;
+      for (; d_icount < sentinel; d_icount++)
+      {
+        if (!free_map_allocate(1, page_pos + d_icount))
+        {
+          i_dblock = i_pblock = di_dblock = di_pblock = res_diblock = false;
+          goto done;
+        }
+        else
+        {
+          block_write(fs_device, *(page_pos + d_icount), zeros);
+          //   printf ("d_icount : %d, sentinel : %d, alloc_sector : %d\n", d_icount,
+          //		      sentinel
+          //		      ,*(page_pos + d_icount));
+        }
+      }
+      b_head->b_state |= (1UL << BH_Dirty);
+    }
+    if (old_sectors < DIRECT_BLOCK_ENTRIES)
+    {
+      // printf ("DD : old_sectors : %d, new_sectors : %d\n", old_sectors, new_sectors);
+      sentinel = new_sectors > DIRECT_BLOCK_ENTRIES ? DIRECT_BLOCK_ENTRIES : new_sectors;
+      for (d_dcount = old_sectors; d_dcount < sentinel; d_dcount++)
+      {
+        if (!free_map_allocate(1, &disk_inode->direct_map_table[d_dcount]))
+        {
+          d_dblock = i_dblock = i_pblock = di_dblock = di_pblock = res_diblock = false;
+          goto done;
+        }
+        else
+        {
+          block_write(fs_device, disk_inode->direct_map_table[d_dcount], zeros);
+          //    printf ("d_dcount : %d, sentinel : %d, alloc_sector : %d\n", d_dcount,
+          //		      sentinel
+          //		      ,disk_inode->direct_map_table[d_dcount]);
+        }
+      }
+    }
+  done: /* Reclaim Allocated Blocks at the failure case */
+    if (!res_diblock)
+    {
+      printf("Stage 1\n");
+      b_head = find_bcache_entry(disk_inode->double_indirect_block_sec);
+      page_pos = (uint32_t *)b_head->b_start_page;
+      sentinel = new_sectors - old_sectors > 127 ? 128
+                                                 : (new_sectors - INDIRECT_BLOCK_ENTRIES % 128);
+      ib_head = find_bcache_entry(*(page_pos + (old_sectors - INDIRECT_BLOCK_ENTRIES) / 128));
+      ipage_pos = (uint32_t *)ib_head->b_start_page;
+      for (res_dicount = (old_sectors - INDIRECT_BLOCK_ENTRIES) % 128;
+           res_dicount < sentinel; res_dicount++)
+        free_map_release(*(ipage_pos + res_dicount), 1);
+    }
+    if (!di_dblock)
+    {
+      printf("Stage 2\n");
+      b_head = find_bcache_entry(disk_inode->double_indirect_block_sec);
+      page_pos = (uint32_t *)b_head->b_start_page;
+      for (p_dicount = DIV_ROUND_UP((old_sectors - INDIRECT_BLOCK_ENTRIES), 128);
+           p_dicount < DIV_ROUND_UP((new_sectors - INDIRECT_BLOCK_ENTRIES), 128);
+           p_dicount++)
+      {
+        ib_head = find_bcache_entry(*(page_pos + p_dicount));
+        ipage_pos = (uint32_t *)ib_head->b_start_page;
+        sentinel = new_sectors - (old_sectors + p_dicount * 128) < 128 ? (new_sectors - INDIRECT_BLOCK_ENTRIES) % 128 : 128;
+        for (d_dicount = 0; d_dicount < sentinel; d_dicount++)
+          free_map_release(*(ipage_pos + d_dicount), 1);
+      }
+    }
+    if (!di_pblock)
+    {
+      printf("Stage 3\n");
+      b_head = find_bcache_entry(disk_inode->double_indirect_block_sec);
+      page_pos = (uint32_t *)b_head->b_start_page;
+      for (p_dicount = DIV_ROUND_UP((old_sectors - INDIRECT_BLOCK_ENTRIES), 128);
+           p_dicount < DIV_ROUND_UP((new_sectors - INDIRECT_BLOCK_ENTRIES), 128);
+           p_dicount++)
+        free_map_release(*(page_pos + p_dicount), 1);
+    }
+    if (!i_dblock)
+    {
+      printf("Stage 4\n");
+      b_head = find_bcache_entry(disk_inode->indirect_block_sec);
+      page_pos = (uint32_t *)b_head->b_start_page;
+      sentinel = new_sectors - old_sectors < 128 ? (new_sectors - DIRECT_BLOCK_ENTRIES) % 128 : 128;
+      for (d_icount = (old_sectors - DIRECT_BLOCK_ENTRIES) % 128;
+           d_icount < sentinel; d_icount++)
+        free_map_release(*(page_pos + d_icount), 1);
+    }
+    if (!i_pblock)
+      free_map_release(disk_inode->indirect_block_sec, 1);
+    if (!d_dblock)
+    {
+      printf("Stage 5\n");
+      for (d_dcount = old_sectors; d_dcount < new_sectors; d_dcount++)
+        free_map_release(disk_inode->direct_map_table[d_dcount], 1);
+    }
+    if (!(res_diblock && di_pblock && di_dblock && i_pblock && i_dblock && d_dblock))
+      return 0;
+    else
+    {
+      disk_inode->length += (write_end - old_length + 1);
+      block_write(fs_device, inode->sector, disk_inode);
+    }
+  }
+
+  while (size > 0)
+  {
+    /* Sector to write, starting byte offset within sector. */
+    block_sector_t sector_idx = byte_to_sector(inode, offset);
+    // if (sector_idx < 2 || sector_idx > 5)printf ("(%s) sector : %d\n", __func__, sector_idx);
+    int sector_ofs = offset % BLOCK_SECTOR_SIZE;
+
+    /* Bytes left in inode, bytes left in sector, lesser of the two. */
+    off_t inode_left = inode_length(inode) - offset;
+    int sector_left = BLOCK_SECTOR_SIZE - sector_ofs;
+    int min_left = inode_left < sector_left ? inode_left : sector_left;
+
+    /* Number of bytes to actually write into this sector. */
+    int chunk_size = size < min_left ? size : min_left;
+    if (chunk_size <= 0)
+      break;
+
+    /* Find Buffer Cache Entry on the list */
+    b_head = find_bcache_entry(sector_idx);
+
+    ASSERT(b_head != NULL);
+
+    memcpy(b_head->b_start_page + sector_ofs, buffer + bytes_written, chunk_size);
+    b_head->b_state |= (1UL << BH_Dirty);
+
+    /*
+    if (sector_ofs == 0 && chunk_size == BLOCK_SECTOR_SIZE)
+      {
+        // Write full sector directly to disk.
+        block_write (fs_device, sector_idx, buffer + bytes_written);
+      }
+    else
+      {
+        // We need a bounce buffer.
+        if (bounce == NULL)
+          {
+            bounce = malloc (BLOCK_SECTOR_SIZE);
+            if (bounce == NULL)
+              break;
+          }
+
+        // If the sector contains data before or after the chunk
+        //   we're writing, then we need to read in the sector
+        //   first.  Otherwise we start with a sector of all zeros.
+        if (sector_ofs > 0 || chunk_size < sector_left)
+          block_read (fs_device, sector_idx, bounce);
+        else
+          memset (bounce, 0, BLOCK_SECTOR_SIZE);
+        memcpy (bounce + sector_ofs, buffer + bytes_written, chunk_size);
+        block_write (fs_device, sector_idx, bounce);
+      }
+    */
+
+    /* Advance. */
+    size -= chunk_size;
+    offset += chunk_size;
+    bytes_written += chunk_size;
+  }
   // free (bounce);
 
   return bytes_written;
@@ -877,35 +848,33 @@ inode_allow_write (struct inode *inode)
 }
 
 /* Returns the length, in bytes, of INODE's data. */
-off_t
-inode_length (const struct inode *inode)
+off_t inode_length(const struct inode *inode)
 {
   return inode->data.length;
 }
 
 struct buffer_head *
-sector_to_bhead (block_sector_t sector_idx, bool free)
+sector_to_bhead(block_sector_t sector_idx, bool free)
 {
-  struct list_elem *e;	
+  struct list_elem *e;
 
-  for (e = list_begin (&bh_list); e!= list_end (&bh_list);
-	e = list_next (e))
+  for (e = list_begin(&bh_list); e != list_end(&bh_list);
+       e = list_next(e))
   {
-    struct buffer_head *b_head = list_entry (e, struct buffer_head, elem);
-    if (!free && ((b_head->b_state & (1UL << BH_Used)) == (1UL << BH_Used))
-		    && (b_head->b_blocknr == sector_idx))
-      {
-	list_remove (&b_head->elem);
-        return b_head;
-      }
-    if (free && (b_head->b_state & (1UL << BH_Used)) != (1UL << BH_Used)) 
-      {
-	memset(b_head->b_start_page, 0, 512);
-	b_head->b_state = 0;
-	b_head->b_blocknr = 0;
-	list_remove (&b_head->elem);
-        return b_head;
-      }
+    struct buffer_head *b_head = list_entry(e, struct buffer_head, elem);
+    if (!free && ((b_head->b_state & (1UL << BH_Used)) == (1UL << BH_Used)) && (b_head->b_blocknr == sector_idx))
+    {
+      list_remove(&b_head->elem);
+      return b_head;
+    }
+    if (free && (b_head->b_state & (1UL << BH_Used)) != (1UL << BH_Used))
+    {
+      memset(b_head->b_start_page, 0, 512);
+      b_head->b_state = 0;
+      b_head->b_blocknr = 0;
+      list_remove(&b_head->elem);
+      return b_head;
+    }
   }
   return NULL;
 }
@@ -962,9 +931,12 @@ pdflush (void)
 	e = list_next (e))
   {
     struct buffer_head *b_head = list_entry (e, struct buffer_head, elem);
-    if (((b_head->b_state & (1UL << BH_Used)) == (1UL << BH_Used))
-    	&& ((b_head->b_state & (1UL << BH_Dirty)) == (1UL << BH_Dirty)))
+    // if (((b_head->b_state & (1UL << BH_Used)) == (1UL << BH_Used))
+    // 	&& ((b_head->b_state & (1UL << BH_Dirty)) == (1UL << BH_Dirty)))
+    if ((b_head->b_state & (1UL << BH_Dirty)) == (1UL << BH_Dirty))
+    {
       block_write (fs_device, b_head->b_blocknr, b_head->b_start_page);
+    }
   }
 }
 
@@ -994,4 +966,19 @@ inode_set_parent (block_sector_t parent, block_sector_t child)
   inode_close(_inode);
 
   return true;
+}
+
+int inode_get_open_cnt (const struct inode *inode)
+{
+  return inode->open_cnt;
+}
+
+void inode_lock (const struct inode *inode)
+{
+  lock_acquire (&((struct inode *)inode)->ilock);
+}
+
+void inode_unlock (const struct inode *inode)
+{
+  lock_release (&((struct inode *) inode)->ilock);
 }

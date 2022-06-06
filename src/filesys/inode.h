@@ -18,19 +18,19 @@ enum bh_state_bits {
 };
 
 struct buffer_head
-  {
-    uint32_t b_state;          
-    uint32_t b_magic;
-    uint32_t *b_page;            	/* the page this bh is mapped to */
-    char *b_start_page;			/* Only a quarter of a page is used by buffer head 
-					   This field points to the used portion of the page 
-					   by this buffer_head */
+{
+  uint32_t b_state;
+  uint32_t b_magic;
+  uint32_t *b_page;   /* the page this bh is mapped to */
+  char *b_start_page; /* Only a quarter of a page is used by buffer head
+       This field points to the used portion of the page
+       by this buffer_head */
 
-    block_sector_t b_blocknr;           /* start block number */
-    struct list_elem elem;		/* All Buffer_head is enumerated at b_list */
-    /* struct list bh_lock; 		Lock need to be added after filesys_lock is removed */ 
-    off_t pos;				/* Offeset in b_page; b_page can accomodate 4 buffer_head */
-  };
+  block_sector_t b_blocknr; /* start block number */
+  struct list_elem elem;    /* All Buffer_head is enumerated at b_list */
+  /* struct list bh_lock; 		Lock need to be added after filesys_lock is removed */
+  off_t pos; /* Offeset in b_page; b_page can accomodate 4 buffer_head */
+};
 
 void inode_init (void);
 bool inode_create (block_sector_t, off_t, bool);
@@ -55,5 +55,8 @@ bool inode_is_removed (struct inode *);
 block_sector_t inode_get_parent (const struct inode *);
 bool inode_set_parent (block_sector_t, block_sector_t);
 
+void inode_lock (const struct inode *inode);
+void inode_unlock (const struct inode *inode);
+int inode_get_open_cnt (const struct inode *inode);
 
 #endif /* filesys/inode.h */

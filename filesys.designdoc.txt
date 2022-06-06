@@ -1,0 +1,390 @@
+                     +-------------------------+
+                     |        CS 140           |
+                     | PROJECT 4: FILE SYSTEMS |
+                     |     DESIGN DOCUMENT     |
+                     +-------------------------+
+
+---- GROUP ----
+
+>> Fill in the names and email addresses of your group members.
+
+Seungwon Yoo    <ysw1021@gmail.com>
+Sukjoon Oh      <sjoon-oa@protonmail.ch>
+
+---- PRELIMINARIES ----
+
+>> If you have any preliminary comments on your submission, notes for the
+>> TAs, or extra credit, please give them here.
+
+We did the assignment with the VM project enabled.
+
+>> Please cite any offline or online sources you consulted while
+>> preparing your submission, other than the Pintos documentation, course
+>> text, lecture notes, and course staff.
+
+No additional sources consulted.
+
+                     INDEXED AND EXTENSIBLE FILES
+                     ============================
+
+---- DATA STRUCTURES ----
+
+>> A1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+// 1. Struct buffer_head
+
+struct inode_disk
+  {
+    off_t length;                       /* File size in bytes. */
+    unsigned magic;                     /* Magic number. */
+    unsigned isdir;
+    /* Extensible File Support */
+    block_sector_t direct_map_table[DIRECT_BLOCK_ENTRIES];
+    block_sector_t indirect_block_sec;
+    block_sector_t double_indirect_block_sec;
+  };
+
+// 2. Some Defined Values
+/* Identifies an inode. */
+#define INODE_MAGIC 0x494e4f44
+#define DIRECT_BLOCK_ENTRIES 122
+#define INDIRECT_BLOCK_ENTRIES (DIRECT_BLOCK_ENTRIES + 128)
+#define DINDIRECT_BLOCK_ENTRIES (INDIRECT_BLOCK_ENTRIES + (128 * 128))
+
+
+
+>> A2: What is the maximum size of a file supported by your inode
+>> structure?  Show your work.
+
+Level 0 : 122 sectors * 512 bytes per sector, thus  62,464 bytes supported.
+Level 1 : 1 indirect block * 122 sectors * 512 bytes per sector, thus 62,464 
+bytes supported.
+Level 2 : 2 doubly indirect blocks * 122 indirect blocks * 62,464 bytes per 
+indirect block, thus 15,241,216 bytes supported.
+
+In total, 15,366,144 bytes is supported.
+
+
+
+---- SYNCHRONIZATION ----
+
+>> A3: Explain how your code avoids a race if two processes attempt to
+>> extend a file at the same time.
+
+An access for some sector that has specific offset to a file can be atomic
+along with the allocating sector if it does not exist. This implies that if
+there are multiple threads who try to write to the identical offset beyond 
+the same file, single sector will be allocated for the function which has
+acquired the inode lock. Thus, simple locking mechanism to an inode, or 
+filesys_lock can accomplish the purpose.
+
+Additionally, this can be protected by checking the length of the files 
+that are planned to be written.
+
+
+
+>> A4: Suppose processes A and B both have file F open, both
+>> positioned at end-of-file.  If A reads and B writes F at the same
+>> time, A may read all, part, or none of what B writes.  However, A
+>> may not read data other than what B writes, e.g. if B writes
+>> nonzero data, A is not allowed to see all zeros.  Explain how your
+>> code avoids this race.
+
+Because the update to the length field occurs only after the entire
+extension has been updated, A cannot see data in our implementation. If 
+such tries happen, A will see no data when B is writing. A can only see
+all data after B has finished writing.
+
+
+
+>> A5: Explain how your synchronization design provides "fairness".
+>> File access is "fair" if readers cannot indefinitely block writers
+>> or vice versa.  That is, many processes reading from a file cannot
+>> prevent forever another process from writing the file, and many
+>> processes writing to a file cannot prevent another process forever
+>> from reading the file.
+
+Fairness can be somewhat achieved when there exists only several locks at
+minimum (at which they are necessary). Since our implementation does not 
+contain any condition variables, or unnecessary locks, our synchronization
+scheme can provide as much as the thread scheduler.
+
+
+
+---- RATIONALE ----
+
+>> A6: Is your inode structure a multilevel index?  If so, why did you
+>> choose this particular combination of direct, indirect, and doubly
+>> indirect blocks?  If not, why did you choose an alternative inode
+>> structure, and what advantages and disadvantages does your
+>> structure have, compared to a multilevel index?
+
+The inode struct we have implemented has a multi-level index. The design has 
+two doubly linked indirect blocks, since it can easily extend the file size on
+demand of a user. The single-level indirect blocks may work, but it greatly limits
+the ability of a file to grow. In our implementation, the size is defined as a global
+defined values, thus the configuration can be easiliy modified at a user's needs. A
+user can easily modify the number of each blocks. This in general allows the user
+to define what the optimal size of a file, so that the system can have the best performance
+utilizing the number of inode accesses.
+
+
+
+
+                            SUBDIRECTORIES
+                            ==============
+
+---- DATA STRUCTURES ----
+
+>> B1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+struct dir 
+  {
+    struct inode *inode;                /* Backing store. */
+    off_t pos;                          /* Current position. */
+  };
+
+struct dir_entry 
+  {
+    block_sector_t inode_sector;        /* Sector number of header. */
+    char name[NAME_MAX + 1];            /* Null terminated file name. */
+    bool in_use;                        /* In use or free? */
+  };
+
+Each entry in a directory (struct dir) has a flag which indicates whether the
+entry is being used or not, the corresponding inode block sector number, and the 
+null-terminated string of a name.
+
+struct thread
+  {
+    /* Owned by thread.c. */
+    tid_t tid;                          /* Thread identifier. */
+    enum thread_status status;          /* Thread state. */
+    char name[16];                      /* Name (for debugging purposes). */
+    uint8_t *stack;                     /* Saved stack pointer. */
+    int priority;                       /* Priority. */
+    struct list_elem allelem;           /* List element for all threads list. */
+
+    /* Shared between thread.c and synch.c. */
+    struct list_elem elem;              /* List element. */
+
+#ifdef USERPROG
+    /* Owned by userprog/process.c. */
+    uint32_t *pagedir;                  /* Page directory. */
+    uint32_t fd[128];
+    uint32_t fd_pos;
+    struct file* fd_file[128]; // Maintain one to many pid_t to fd coupled with fd_file
+    struct file* itself;
+    tid_t ptid;
+    tid_t ctid;
+    int exit_status;
+    int seen_status;
+    struct semaphore parent_sema;
+    struct semaphore exit_sema;
+    struct semaphore load_sema;
+    int load_status;
+    void (*handler[3]) (); /* Signal Handler */
+    struct dir *current_dir;
+#endif
+
+    /* Owned by thread.c. */
+    unsigned magic;                     /* Detects stack overflow. */
+  };
+
+Member current_dir is added to indicate what directory the thread is working on currently.
+
+
+
+---- ALGORITHMS ----
+
+>> B2: Describe your code for traversing a user-specified path.  How
+>> do traversals of absolute and relative paths differ?
+
+For the absolute path, our implementation starts by parsing the path. When the path is
+given, it searches for the name and corresponding inode whether the entry has the identical
+name. The absolute path can be easily identified, as the path string always starts with '/' 
+character value. If it is not the case, then the path can be regarded as the relative one, 
+thus parses the parth starting the current directory.
+
+
+
+---- SYNCHRONIZATION ----
+
+>> B4: How do you prevent races on directory entries?  For example,
+>> only one of two simultaneous attempts to remove a single file
+>> should succeed, as should only one of two simultaneous attempts to
+>> create a file with the same name, and so on.
+
+Reads or writes to the directory should be protected by a lock. When multiple threads
+(or processes) are trying to delete some entries, one will try to acquire a lock, that
+is linked with the directory inode. This should happen same for the creation of an entry,
+for instance when a process is trying to make an entry. It first try to acquire a lock, and 
+make some updates to the directory. In this way, two processes are prevented from generating
+entries that have identical name.
+
+
+
+>> B5: Does your implementation allow a directory to be removed if it
+>> is open by a process or if it is in use as a process's current
+>> working directory?  If so, what happens to that process's future
+>> file system operations?  If not, how do you prevent it?
+
+Directories are also represented as inode. Thus, any changes to an inode are prevented by
+the locking mechanism described above (in question B4). When filesys_remove is called, 
+it first checks whether there are any errors in deleting a file, and calls dir_remove and
+inode_remove seqneutially. Such inode is marked as deleted when inode_remove is called, 
+and its information is recorded to directory inode.
+
+The inodes are deleted when therea are no processes opening it. 
+
+
+
+---- RATIONALE ----
+
+>> B6: Explain why you chose to represent the current directory of a
+>> process the way you did.
+
+All directories which contains directory entries dir_entry is managed by struct dir. Thus, it
+is best to manage the current directory by giving a handle to the struct dir. The thread-representing
+structure should have direct access to the current directory, thus a member current_dir is added
+to the struct thread.
+
+
+
+                             BUFFER CACHE
+                             ============
+
+---- DATA STRUCTURES ----
+
+>> C1: Copy here the declaration of each new or changed `struct' or
+>> `struct' member, global or static variable, `typedef', or
+>> enumeration.  Identify the purpose of each in 25 words or less.
+
+// 1. structure buffer_head
+struct buffer_head
+{
+  uint32_t b_state;
+  uint32_t b_magic;
+  uint32_t *b_page;   /* the page this bh is mapped to */
+  char *b_start_page; 
+    /* Only a quarter of a page is used by buffer head
+       This field points to the used portion of the page
+       by this buffer_head */
+
+  block_sector_t b_blocknr; /* start block number */
+  struct list_elem elem;    /* All Buffer_head is enumerated at b_list */
+  /* struct list bh_lock; Lock need to be added after filesys_lock is removed */
+  off_t pos; /* Offeset in b_page; b_page can accomodate 4 buffer_head */
+};
+
+// 2. Additional Lists and locks in managing buffers
+struct list bh_list;
+struct lock bh_list_lock; /* Lock need to be acquired after filesys_lock is removed */
+static int active_b_count; /* Count How many buffer cache entry is used curretly.
+			      Protected by bh_list_lock */
+
+
+
+---- ALGORITHMS ----
+
+>> C2: Describe how your cache replacement algorithm chooses a cache
+>> block to evict.
+
+The cache is evicted by observing whether an entry is marked as BH_DIRTY or not. Our 
+implementation method is simple. The cache entries are managed using the list, with limited
+numbers of entries, say 64 in total. evict_bcache_entry first removes the very first element
+of bh_list, which is the list that contains used entries, and writes the entry to the block
+device.
+
+There is also a function called pdflush, which means periodic flush. It periodically flushes
+dirty blocks to the block device. It is registered in the timer interrupt handler. The default 
+count ticks is set to 200 in our implementation.
+
+
+
+>> C3: Describe your implementation of write-behind.
+
+This is described above.
+
+
+
+
+>> C4: Describe your implementation of read-ahead.
+
+Our implementation does not have read-ahead feature.
+
+
+
+---- SYNCHRONIZATION ----
+
+>> C5: When one process is actively reading or writing data in a
+>> buffer cache block, how are other processes prevented from evicting
+>> that block?
+
+Buffer cache is managed by the locking mechanism in our implementation. If some processes 
+want to read or write through the buffer cache, they must first acquire the lock of the 
+buffer cache. However, they may not manually acquire the lock, since the buffer cache is
+an additional layer between block device and the upper interface. The buffer cache handling
+mechanism sits in the inode APIs thus it is managed automatically.
+
+
+
+>> C6: During the eviction of a block from the cache, how are other
+>> processes prevented from attempting to access the block?
+
+This also utilizes locking mechanism, briefly summarized above.
+
+
+
+---- RATIONALE ----
+
+>> C7: Describe a file workload likely to benefit from buffer caching,
+>> and workloads likely to benefit from read-ahead and write-behind.
+
+File workloads that are likely to benefit from the buffer cache may be some patterns that 
+accesses same files, whether it is the read operation or the write operation. Workloads that
+are likely to benefit from read-ahead are the ones with sequential data. Workloads that 
+are likely to benefir from write-ahead are ones that open many files and keep them open until
+they are closed.
+
+
+
+File workloads likely to benefit from buffer caching will read and write
+repeatedly to the same blocks before closing the files. Workloads likely to
+benefit from read-ahead are ones that access the data in files sequentially
+(likely a common occurrence). Workloads likely to benefit from write-behind are
+ones that open many files and keep them open until they close, but don't modify
+all of them that frequently.
+
+                           SURVEY QUESTIONS
+                           ================
+
+Answering these questions is optional, but it will help us improve the
+course in future quarters.  Feel free to tell us anything you
+want--these questions are just to spur your thoughts.  You may also
+choose to respond anonymously in the course evaluations at the end of
+the quarter.
+
+>> In your opinion, was this assignment, or any one of the three problems
+>> in it, too easy or too hard?  Did it take too long or too little time?
+
+
+>> Did you find that working on a particular part of the assignment gave
+>> you greater insight into some aspect of OS design?
+
+
+>> Is there some particular fact or hint we should give students in
+>> future quarters to help them solve the problems?  Conversely, did you
+>> find any of our guidance to be misleading?
+
+
+>> Do you have any suggestions for the TAs to more effectively assist
+>> students in future quarters?
+
+
+>> Any other comments?
+

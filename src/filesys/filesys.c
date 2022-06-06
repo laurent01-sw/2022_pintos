@@ -135,7 +135,7 @@ filesys_open (const char *name)
   else {
 
     dir = find_end_dir (s, &filename, false);
-    
+
     if (dir != NULL)
     {
       dir_lookup (dir, filename, &inode);
